@@ -1,0 +1,12 @@
+[Unit]
+Description=PS5 Hardware Control (restore settings, Thermal Guard, LED loops)
+After=multi-user.target
+
+[Service]
+Type=simple
+# Adjust if you installed somewhere else (see README).
+ExecStart=/opt/ps5-hwcon-gui/.venv/bin/ps5-hwcon-gui --headless
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

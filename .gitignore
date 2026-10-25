@@ -1,0 +1,20 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# PyInstaller (packaging/build_binary.sh)
+build/
+dist/
+*.spec
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Local-only test helpers
+tests/
+tools/

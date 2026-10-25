@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ps5-hwcon-gui"
+version = "1.0.0"
+description = "PyQt6 app for PS5 Linux fan, CPU/GPU governor and clock, and LED control"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = ["PyQt6>=6.4"]
+
+[project.scripts]
+ps5-hwcon-gui = "ps5hwcon.__main__:main"
+
+[tool.setuptools]
+packages = ["ps5hwcon", "ps5hwcon.pages"]
+
+[tool.setuptools.package-data]
+ps5hwcon = ["check.svg", "icon.png"]
