@@ -1,9 +1,17 @@
-# ps5-hwcon-gui
+<h1 align="center">ps5-hwcon-gui</h1>
 
-A desktop (PyQt6) port of [ps5-hwcon-plugin](https://github.com/NotHavocc/ps5-hwcon-plugin) for
+<p align="center">
+  <img src="docs/about.png" alt="About tab" width="50%">
+</p>
+
+<p align="center">
+A desktop (PyQt6) port of <a href="https://github.com/NotHavocc/ps5-hwcon-plugin">ps5-hwcon-plugin</a> for
 PS5 Linux. It covers the same features as the Decky plugin in a regular window: fan target and live
 temperatures, CPU and GPU governors and clock locks, and indicator LED presets. Decky Loader is not
 needed.
+</p>
+
+---
 
 ## Requirements
 
