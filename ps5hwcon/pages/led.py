@@ -97,6 +97,10 @@ class LedPage(Page):
         self.loop_slider.changed.connect(self._loop_seconds_moved)
         self.loop_row = animations.add(InfoRow("Loop Status"))
 
+        startup = self.add(Card("Startup"))
+        self.restore_toggle = startup.add(ToggleRow("Restore on Startup"))
+        self.restore_toggle.toggled.connect(lambda checked: self.save_loop(None, None, checked))
+
         self.all_card = self.add(Card("All Presets"))
         self.filter = self.all_card.add(QLineEdit())
         self.filter.setPlaceholderText("Filter presets…")
@@ -159,7 +163,7 @@ class LedPage(Page):
 
         self.call("set_led_preset", preset, callback=done)
 
-    def save_loop(self, enabled, seconds):
+    def save_loop(self, enabled, seconds, restore=None):
         self.saving_loop = True
         self.render()
 
@@ -170,7 +174,7 @@ class LedPage(Page):
             self.saving_loop = False
             self.render()
 
-        self.call("set_led_settings", enabled, seconds, callback=done)
+        self.call("set_led_settings", enabled, seconds, restore, callback=done)
 
     def _loop_seconds_moved(self, value):
         self.loop_seconds = value
@@ -229,6 +233,18 @@ class LedPage(Page):
         else:
             loop_status = "Off"
         self.loop_row.set(loop_status)
+
+        saved_preset = self.loop["saved_preset"] if self.loop else None
+        what = (
+            f"Re-applies {prettify(saved_preset)}"
+            if saved_preset
+            else "Re-applies your last LED preset"
+        )
+        self.restore_toggle.set_description(
+            f"{what} when the app or service starts. The kernel picks its default LED at boot."
+        )
+        self.restore_toggle.set_checked(bool(self.loop and self.loop["restore_on_boot"]))
+        self.restore_toggle.setEnabled(self.loop is not None and not self.saving_loop)
 
         self._sync_rows()
         self.all_card.setVisible(bool(self.presets))

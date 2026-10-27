@@ -108,6 +108,7 @@ firmware holds the GPU at 2.23 GHz regardless of these settings.
 - Quick buttons for Off, White Bright, Blue Rich, Purple, Orange Breathe and Pink Breathe.
 - A filterable list of every preset the kernel exposes.
 - **Loop Animations**: replays breathe and pulse animations every 2–30 s, in the background.
+- **Restore on Startup**: re-applies your last LED preset when the app or service starts.
 
 ## Single-file builds
 

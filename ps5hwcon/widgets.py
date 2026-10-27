@@ -253,13 +253,42 @@ class ButtonGrid(QWidget):
             self.grid.setColumnStretch(column, 1)
 
 
+def desktop_notify(title, text, warning=False):
+    """Sends a freedesktop notification without blocking; silently does nothing if the
+    session bus or notification service is unavailable."""
+    from PyQt6.QtCore import QMetaType
+    from PyQt6.QtDBus import QDBusArgument, QDBusConnection, QDBusMessage
+
+    bus = QDBusConnection.sessionBus()
+    if not bus.isConnected():
+        return
+    message = QDBusMessage.createMethodCall(
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "Notify",
+    )
+    message.setArguments([
+        "ps5-hwcon-gui",
+        QDBusArgument(0, QMetaType.Type.UInt.value),
+        "dialog-warning" if warning else "dialog-information",
+        title,
+        text,
+        QDBusArgument([], QMetaType.Type.QStringList.value),
+        {},
+        -1,
+    ])
+    bus.send(message)
+
+
 class Toast(QFrame):
-    """A transient message pinned to the bottom of its parent window."""
+    """A transient message pinned to the top of its parent window, below any widget in `above`."""
 
     DURATION_MS = 3500
 
-    def __init__(self, parent):
+    def __init__(self, parent, above=None):
         super().__init__(parent)
+        self.above = above
         self.setObjectName("toast")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         layout = QHBoxLayout(self)
@@ -293,7 +322,8 @@ class Toast(QFrame):
         width = min(520, parent.width() - 40)
         self.setFixedWidth(width)
         self.adjustSize()
-        self.move((parent.width() - width) // 2, parent.height() - self.height() - 64)
+        top = self.above.geometry().bottom() + 1 if self.above and self.above.isVisible() else 0
+        self.move((parent.width() - width) // 2, top + 16)
 
     def _fade_out(self):
         self._fade.setStartValue(1.0)

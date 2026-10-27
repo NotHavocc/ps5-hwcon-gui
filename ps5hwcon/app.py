@@ -25,7 +25,7 @@ from .pages.cpu import CpuPage
 from .pages.fan import FanPage
 from .pages.gpu import GpuPage
 from .pages.led import LedPage
-from .widgets import ACCENT, Toast
+from .widgets import ACCENT, Toast, desktop_notify
 
 ACCENT_HOVER = "#005a9e"
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -373,6 +373,7 @@ class MainWindow(QMainWindow):
         right.addWidget(self.stack, 1)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(20, 10, 20, 16)
+        buttons.setSpacing(10)
         buttons.addStretch(1)
         hide_button = QPushButton("Hide to Tray")
         hide_button.setObjectName("cancelBtn")
@@ -385,7 +386,7 @@ class MainWindow(QMainWindow):
         main.addLayout(right, 1)
         self.setCentralWidget(root)
 
-        self.toast = Toast(root)
+        self.toast = Toast(root, above=self.banner)
         self.about = AboutPage()
         self.stack.addWidget(self.about)
         QListWidgetItem("About", self.nav)
@@ -473,7 +474,17 @@ class MainWindow(QMainWindow):
         else:
             self.toast.show_message(result["error"], critical=True)
             if not self.isVisible() and self.tray is not None:
-                self.tray.showMessage(APP_TITLE, result["error"], QSystemTrayIcon.MessageIcon.Warning)
+                self._tray_message(result["error"], warning=True)
+
+    def _tray_message(self, text, warning=False):
+        if sys.platform.startswith("linux"):
+            # Without a D-Bus tray (e.g. running as root) Qt shows its own balloon widget,
+            # which lands in the screen's top-left corner, so go to the notification
+            # service directly and drop the message if it can't be reached.
+            desktop_notify(APP_TITLE, text, warning)
+        else:
+            icon = QSystemTrayIcon.MessageIcon.Warning if warning else QSystemTrayIcon.MessageIcon.Information
+            self.tray.showMessage(APP_TITLE, text, icon)
 
     def show_window(self):
         self.show()
@@ -506,10 +517,9 @@ class MainWindow(QMainWindow):
         self.hide()
         if not self.settings.value("tray_hint_shown", False, type=bool):
             self.settings.setValue("tray_hint_shown", True)
-            self.tray.showMessage(
-                APP_TITLE,
+            self._tray_message(
                 "Still running in the tray, so Thermal Guard and LED loops keep working. "
-                "Use Quit to exit.",
+                "Use Quit to exit."
             )
 
     def quit(self):
