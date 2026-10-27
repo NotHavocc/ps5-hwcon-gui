@@ -168,12 +168,23 @@ if ! qt_error="$(sudo env QT_QPA_PLATFORM=offscreen "$PREFIX/.venv/bin/python" -
   die "Qt could not start. A system graphics library is probably missing (see the error above)."
 fi
 ok "Qt works"
-if command -v ldconfig >/dev/null && ! ldconfig -p 2>/dev/null | grep -q 'libxcb-cursor\.so\.0'; then
-  hint="libxcb-cursor is not installed. Qt needs it in X11 sessions (Wayland sessions are fine)."
-  command -v apt-get >/dev/null && hint="$hint Install it with: sudo apt install libxcb-cursor0"
-  command -v dnf >/dev/null && hint="$hint Install it with: sudo dnf install xcb-util-cursor"
-  command -v pacman >/dev/null && hint="$hint Install it with: sudo pacman -S xcb-util-cursor"
-  warn "$hint"
+has_xcb_cursor() { ldconfig -p 2>/dev/null | grep -q 'libxcb-cursor\.so\.0'; }
+PATH="$PATH:/sbin:/usr/sbin"
+if command -v ldconfig >/dev/null && ! has_xcb_cursor; then
+  step "Installing libxcb-cursor (Qt needs it in X11 sessions)"
+  if command -v apt-get >/dev/null; then
+    sudo apt-get install -y libxcb-cursor0 || true
+  elif command -v dnf >/dev/null; then
+    sudo dnf install -y xcb-util-cursor || true
+  elif command -v pacman >/dev/null; then
+    sudo pacman -S --needed --noconfirm xcb-util-cursor || true
+  fi
+  if has_xcb_cursor; then
+    ok "libxcb-cursor installed"
+  else
+    warn "libxcb-cursor is still missing. The window won't open in X11 sessions until you install it" \
+      "(Debian/Ubuntu: libxcb-cursor0, Fedora/Arch: xcb-util-cursor)."
+  fi
 fi
 
 step "Adding the launcher and menu entry"
