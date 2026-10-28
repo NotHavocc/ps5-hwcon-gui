@@ -296,7 +296,7 @@ class AboutPage(QWidget):
         version.setStyleSheet("color: #aaaaaa;")
         layout.addWidget(version)
         desc = QLabel(
-            "Fan target, temperatures, CPU and GPU governors and clocks, "
+            "Fan curve or target, temperatures, CPU and GPU governors and clocks, "
             "and indicator LED presets for PS5 Linux."
         )
         desc.setWordWrap(True)
@@ -423,8 +423,7 @@ class MainWindow(QMainWindow):
         menu.addAction(show_action)
         menu.addSeparator()
         menu.addAction(quit_action)
-        # On macOS, Qt's native menu-bar menu aborts the app with an NSException
-        # (NSEvent clickCount on a system-defined event), so a click just shows the window.
+        # macOS testing slop (bcs im developing GUI on mac)
         if sys.platform != "darwin":
             self.tray.setContextMenu(menu)
         self.tray.activated.connect(
@@ -478,9 +477,6 @@ class MainWindow(QMainWindow):
 
     def _tray_message(self, text, warning=False):
         if sys.platform.startswith("linux"):
-            # Without a D-Bus tray (e.g. running as root) Qt shows its own balloon widget,
-            # which lands in the screen's top-left corner, so go to the notification
-            # service directly and drop the message if it can't be reached.
             desktop_notify(APP_TITLE, text, warning)
         else:
             icon = QSystemTrayIcon.MessageIcon.Warning if warning else QSystemTrayIcon.MessageIcon.Information

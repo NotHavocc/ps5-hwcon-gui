@@ -28,6 +28,47 @@ FAN_PRESETS = [
     ("max", "Max Cooling", FAN_MAX_COOLING),
 ]
 
+FAN_CURVE_POINTS = 8
+FAN_CURVE_TEMP_MIN = 20
+FAN_CURVE_TEMP_MAX = 90
+FAN_PWM_MAX = 255
+FAN_MODE_FULL = 0
+FAN_MODE_CURVE = 2
+FAN_MODE_LABELS = {FAN_MODE_FULL: "Full Speed", 1: "Manual", FAN_MODE_CURVE: "Curve"}
+# Temperatures of the driver's built-in quiet curve; its PWM values depend on the board.
+FAN_QUIET_TEMPS = [50, 60, 65, 70, 75, 80, 85, 87]
+FAN_QUIET_STOP = 45
+
+
+def pwm_to_percent(pwm):
+    return round(pwm * 100 / FAN_PWM_MAX)
+
+
+def percent_to_pwm(percent):
+    return round(percent * FAN_PWM_MAX / 100)
+
+
+def _curve(stop, points):
+    return {"stop": stop, "points": [[temp, percent_to_pwm(pct)] for temp, pct in points]}
+
+
+# (id, label, subtitle, curve); a curve of None means the driver's default.
+FAN_CURVE_PRESETS = [
+    ("quiet", "Quiet", "Kernel default", None),
+    (
+        "balanced",
+        "Balanced",
+        "100% at 85 °C",
+        _curve(40, [(45, 15), (55, 25), (60, 35), (65, 45), (70, 60), (75, 75), (80, 90), (85, 100)]),
+    ),
+    (
+        "cool",
+        "Cool",
+        "100% at 80 °C",
+        _curve(35, [(40, 20), (50, 30), (55, 40), (60, 50), (65, 65), (70, 80), (75, 90), (80, 100)]),
+    ),
+]
+
 CURATED_LED_PRESETS = [
     ("off", "Off"),
     ("white_bright", "White Bright"),

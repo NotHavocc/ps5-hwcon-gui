@@ -8,8 +8,6 @@ from . import backend
 
 
 def run_headless():
-    """Restore saved settings and run Thermal Guard and the LED loop without a window."""
-
     async def main():
         service = backend.Backend()
         await service.start()

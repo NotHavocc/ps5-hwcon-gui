@@ -97,7 +97,6 @@ if [ -z "$SRC_DIR" ]; then
   command -v tar >/dev/null || die "tar is required"
   DOWNLOAD_DIR="$(mktemp -d)"
   trap 'rm -rf -- "$DOWNLOAD_DIR"' EXIT
-  # GitHub serves both branches and tags at this URL.
   if ! curl -fsSL "https://github.com/$REPO/archive/$REF.tar.gz" \
     | tar -xzf - -C "$DOWNLOAD_DIR" --strip-components=1; then
     die "Downloading https://github.com/$REPO/archive/$REF.tar.gz failed"
