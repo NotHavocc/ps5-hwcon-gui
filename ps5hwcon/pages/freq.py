@@ -109,11 +109,15 @@ class FrequencyPage(Page):
         self.restore_toggle = advanced.add(ToggleRow("Restore on Startup"))
         self.restore_toggle.toggled.connect(self.save_restore)
 
+        self.build_extra_cards()
         self.finish_layout()
         self.render()
 
     def build_status_rows(self, card):
         raise NotImplementedError
+
+    def build_extra_cards(self):
+        pass
 
     def render_status_rows(self, status):
         raise NotImplementedError

@@ -9,6 +9,8 @@ DESKTOP_FILE="/usr/local/share/applications/ps5-hwcon-gui.desktop"
 SERVICE_NAME="ps5-hwcon"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 SETTINGS_DIR="/var/lib/ps5-hwcon"
+SUDOERS_FILE="/etc/sudoers.d/$APP_NAME"
+PASSWORDLESS_MARKER="$PREFIX/passwordless"
 MIN_PYTHON="3.9"
 REPO="NotHavocc/ps5-hwcon-gui"
 REF="main"
@@ -22,6 +24,7 @@ fi
 FORCE=0
 UNINSTALL=0
 SERVICE=0
+PASSWORDLESS=""
 
 usage() {
   cat <<EOF
@@ -29,7 +32,11 @@ Usage: $0 [options]
 
   --service      Also install and start the headless service, which restores your
                  settings at boot and runs Thermal Guard and LED loops without a window
-  --force        Install even if the PS5 kernel interfaces are missing
+  --passwordless Open the app without asking for a password (adds a sudoers rule for
+                 your user that only covers this app; kept when you rerun the installer)
+  --no-passwordless
+                 Remove that rule and ask for a password again
+  --force       Install even if the PS5 kernel interfaces are missing
   --uninstall    Remove the app (your settings in $SETTINGS_DIR are kept)
   --ref NAME     Branch or tag to download when not run from a copy of the repo
                  (default: $REF)
@@ -40,6 +47,8 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --service) SERVICE=1; shift ;;
+    --passwordless) PASSWORDLESS=1; shift ;;
+    --no-passwordless) PASSWORDLESS=0; shift ;;
     --force) FORCE=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --ref)
@@ -86,7 +95,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     ok "Service removed"
   fi
   sudo rm -rf -- "$PREFIX"
-  sudo rm -f -- "$BIN_LINK" "$DESKTOP_FILE"
+  sudo rm -f -- "$BIN_LINK" "$DESKTOP_FILE" "$SUDOERS_FILE"
   ok "App removed (settings in $SETTINGS_DIR are kept)"
   exit 0
 fi
@@ -125,10 +134,34 @@ ok "$("$PYTHON" -V 2>&1) at $PYTHON"
 
 step "Checking PS5 kernel interfaces"
 missing=0
-for path in /sys/bus/platform/devices/ps5-fan/target_temp /sys/class/misc/ps5_buzzer/beep \
-  /sys/devices/system/cpu/cpufreq /sys/class/devfreq/ps5-gpufreq; do
+find_fan_hwmon() {
+  local name_file
+  for name_file in /sys/class/hwmon/hwmon*/name; do
+    if [ "$(cat "$name_file" 2>/dev/null)" = "ps5_fan" ]; then
+      dirname "$name_file"
+      return 0
+    fi
+  done
+  return 1
+}
+FAN_TARGET="/sys/bus/platform/devices/ps5-fan/target_temp"
+if fan_hwmon="$(find_fan_hwmon)"; then
+  ok "$fan_hwmon (ps5_fan, fan curves available)"
+elif [ -e "$FAN_TARGET" ]; then
+  ok "$FAN_TARGET (no ps5_fan hwmon driver, so no fan curves)"
+else
+  warn "missing: ps5_fan hwmon device or $FAN_TARGET"
+  missing=1
+fi
+for path in /sys/class/misc/ps5_buzzer/beep /sys/devices/system/cpu/cpufreq; do
   if [ -e "$path" ]; then ok "$path"; else warn "missing: $path"; missing=1; fi
 done
+GPU_DEVFREQ="/sys/class/devfreq/ps5-gpufreq"
+if [ -e "$GPU_DEVFREQ" ]; then
+  ok "$GPU_DEVFREQ"
+else
+  warn "no $GPU_DEVFREQ, so the GPU tab won't be able to change governors or clocks (optional)"
+fi
 led_nodes=(/sys/class/leds/ps5:*)
 if [ -e "${led_nodes[0]}" ]; then ok "/sys/class/leds/ps5:*"; else warn "missing: /sys/class/leds/ps5:*"; missing=1; fi
 if [ "$missing" -eq 1 ]; then
@@ -194,6 +227,10 @@ APP="$PREFIX/.venv/bin/$APP_NAME"
 if [ "\$(id -u)" -eq 0 ]; then
   exec "\$APP" "\$@"
 fi
+if [ -e "$PASSWORDLESS_MARKER" ] && sudo -n -l "\$APP" "\$@" >/dev/null 2>&1; then
+  export XAUTHORITY="\${XAUTHORITY:-\$HOME/.Xauthority}"
+  exec sudo -n "\$APP" "\$@"
+fi
 if [ -t 0 ] && command -v sudo >/dev/null; then
   exec sudo -E "\$APP" "\$@"
 fi
@@ -213,6 +250,32 @@ Terminal=false
 Categories=System;Settings;HardwareSettings;
 EOF
 ok "Run it with: $BIN_LINK  (or PS5 Hardware Control in the app menu)"
+
+if [ -z "$PASSWORDLESS" ]; then
+  if [ -e "$PASSWORDLESS_MARKER" ]; then PASSWORDLESS=1; else PASSWORDLESS=0; fi
+fi
+if [ "$PASSWORDLESS" -eq 1 ]; then
+  step "Allowing the app to open without a password"
+  APP_PATH="$PREFIX/.venv/bin/$APP_NAME"
+  sudoers_tmp="$(mktemp)"
+  cat >"$sudoers_tmp" <<EOF
+# Written by the ps5-hwcon-gui installer. Remove it with: install.sh --no-passwordless
+Cmnd_Alias PS5HWCON = $APP_PATH "", $APP_PATH --tray
+Defaults!PS5HWCON always_set_home, !requiretty
+Defaults!PS5HWCON env_keep += "DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE"
+$(id -un) ALL=(root) NOPASSWD: PS5HWCON
+EOF
+  if ! sudo visudo -cf "$sudoers_tmp" >/dev/null; then
+    rm -f -- "$sudoers_tmp"
+    die "The sudoers rule failed validation, so it wasn't installed"
+  fi
+  sudo install -m 440 -o root -g root "$sudoers_tmp" "$SUDOERS_FILE"
+  rm -f -- "$sudoers_tmp"
+  sudo touch "$PASSWORDLESS_MARKER"
+  ok "$(id -un) can open the app without a password ($SUDOERS_FILE)"
+else
+  sudo rm -f -- "$SUDOERS_FILE" "$PASSWORDLESS_MARKER"
+fi
 
 if [ "$SERVICE" -eq 1 ] || [ "$was_running" -eq 1 ]; then
   step "Installing the headless service"

@@ -385,7 +385,6 @@ class FanPage(Page):
         elif self.view is not None:
             view = self.view
         else:
-            # Open on whatever is driving the fan: a target-built curve, or any other curve.
             view = VIEW_TARGET if target is not None else VIEW_CURVE
         target_view = view == VIEW_TARGET
         for view_id, button in self.view_buttons.items():

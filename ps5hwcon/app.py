@@ -33,7 +33,7 @@ CHECK_MARK = os.path.join(PACKAGE_DIR, "check.svg")
 ICON_PATH = os.path.join(PACKAGE_DIR, "icon.png")
 
 STYLESHEET = f"""
-QMainWindow, #root, #pageContent, QScrollArea, QScrollArea > QWidget > QWidget {{
+QMainWindow, QDialog, #root, #pageContent, QScrollArea, QScrollArea > QWidget > QWidget {{
     background-color: #2b2b2b;
     color: #ffffff;
 }}
@@ -43,6 +43,31 @@ QWidget {{
 QLabel {{
     color: #ffffff;
     background-color: transparent;
+}}
+QMenu {{
+    background-color: #333333;
+    border: 1px solid #555555;
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 6px 24px;
+    border-radius: 3px;
+}}
+QMenu::item:selected {{
+    background-color: {ACCENT};
+}}
+QMenu::item:disabled {{
+    color: #777777;
+}}
+QMenu::separator {{
+    height: 1px;
+    background: #555555;
+    margin: 4px 8px;
+}}
+QToolTip {{
+    background-color: #333333;
+    color: #ffffff;
+    border: 1px solid #555555;
 }}
 QListWidget#nav {{
     background-color: #1e1e1e;

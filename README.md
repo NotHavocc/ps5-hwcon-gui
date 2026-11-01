@@ -17,7 +17,7 @@ Loader is not needed.
 
 ## Requirements
 
-- A PS5 running Linux with the [ps5-linux-patches](https://github.com/rmuxnet/ps5-linux-patches-1)
+- A PS5 running Linux with the [ps5-linux-patches](https://github.com/ps5-linux/ps5-linux-patches)
   kernel. The app only talks to the sysfs interfaces that kernel adds.
 - Python 3.9+ and PyQt6.
 - Root, because every control writes to sysfs. The window shows a warning banner when it isn't
@@ -53,6 +53,17 @@ ps5-hwcon-gui          # open the window
 ps5-hwcon-gui --tray   # start hidden in the tray
 ```
 
+The app needs root, so it asks for your password each time it opens. To skip that, add
+`--passwordless` to the install command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NotHavocc/ps5-hwcon-gui/main/install.sh | bash -s -- --passwordless
+```
+
+This adds a sudoers rule for your user that only covers opening this app, and updates keep it. The
+trade-off is that anything running as your user can then open the app as root without a password.
+Run the installer with `--no-passwordless` to remove the rule.
+
 Settings are stored in `/var/lib/ps5-hwcon/settings.json` when running as root, otherwise in
 `~/.config/ps5-hwcon/`. Set `PS5HWCON_SETTINGS_DIR` to use another directory.
 
@@ -78,10 +89,12 @@ GUI, then start the service again.
 ### Fan
 
 **Fan Control** switches between **Target Temperature** (the original control) and **Fan Curve**.
-Fan curves need a kernel with the `ps5_fan` hwmon driver (rmuxnet/ps5-linux-patches-1 `meower` from
-[`883eef9`](https://github.com/rmuxnet/ps5-linux-patches-1/commit/883eef9)); without it the page
-opens on Target Temperature and Fan Curve is greyed out. Those kernels drop `target_temp`, so there a
-target is applied as a curve that reaches 45% at the target and full speed 6 °C above it.
+Fan curves need a kernel with the `ps5_fan` hwmon driver, which ps5-linux-patches includes from
+7.2.3 ([#60](https://github.com/ps5-linux/ps5-linux-patches/pull/60)). The app and installer look
+for that device rather than the kernel version, so any kernel carrying the driver works. Without it
+the page opens on Target Temperature and Fan Curve is greyed out. Kernels with the driver drop
+`target_temp`, so there a target is applied as a curve that reaches 45% at the target and full speed
+6 °C above it.
 
 - **Temperatures**: live CPU (`k10temp`), GPU, SSD and any other hwmon sensors, refreshed every 2 s
   and colored as they approach the overheat threshold.
@@ -119,13 +132,45 @@ target is applied as a curve that reaches 45% at the target and full speed 6 °C
   limits.
 - **Restore on Startup**: re-applies your last GPU governor and clock lock.
 
-GPU governors need a kernel built with `CONFIG_PS5_GPUFREQ`. While the CPU boosts (3.3–3.5 GHz) the
+- **CU Unlock**: turns on the compute units disabled at the factory (36 or 38 active out of 40). **40
+  CUs** adds `amdgpu.ps5_cu_unlock=3` to `cmdline.txt` on the boot drive, and **38 CUs** also adds
+  `amdgpu.disable_cu=0.0.0` to mask one pair, so both need a reboot. **Off** removes both arguments,
+  including a `disable_cu` you added yourself. The previous file is kept as `cmdline.txt.bak`.
+  **Active CUs** shows the count the driver reported. Only an even split across both shader engines
+  helps performance, so 38 CUs usually scores the same as 36. Some disabled CUs can be faulty, and
+  the pair masked for 38 CUs is always the same one, so it may not avoid them. If you see glitches,
+  try `RADV_DEBUG=nohiz`, then turn this off. If the screen is unusable, remove the arguments over
+  SSH or from another computer.
+- **Apply Now** (experimental): applies a CU Unlock change without a reboot by reloading amdgpu. It
+  closes everything on screen and quits this app, so it needs `amdgpu` built as a module and a
+  systemd display manager. Without those, only the reboot works. If something else is still using
+  the GPU the driver can't unload, and the display comes back with nothing changed. See
+  `journalctl -u ps5-hwcon-cu-reload` for what happened. Reloading the driver hasn't been proven on
+  PS5, so a black screen is possible. Restart the console if that happens.
+
+- **Boot partition**: CU Unlock and GPU Memory edit files on the FAT partition the console booted
+  from, wherever the distro or desktop mounted it. If it isn't mounted, the app mounts it read-only
+  at `/boot/efi` (or `/run/ps5-hwcon/boot` if that's taken), and only makes it writable while
+  saving. It picks the partition whose `cmdline.txt` has the running `root=` argument. If it can't
+  find one, or can't tell which one that is, the GPU page shows why.
+- **GPU Memory**: **VRAM** writes `vram.txt` on the boot drive, in the hex format the loader expects,
+  and warns if the existing value looks wrong. It's a minimum that stays reserved from system RAM,
+  so 512 MB suits most games. **GTT Limit** sets `ttm.pages_limit` in `cmdline.txt`, which raises how
+  much system RAM the GPU can use without reserving it, so try this first if a game runs out of
+  memory. Both need a reboot, and **Apply Now** doesn't cover them. See the
+  [guide](https://rmuxnet.gitlab.io/ps5-linux-guide/guide/gpu#vram) for how the two interact.
+
+GPU governors need a kernel built with `CONFIG_PS5_GPUFREQ`. The driver isn't part of
+[ps5-linux-patches](https://github.com/ps5-linux/ps5-linux-patches) itself, so on those kernels the
+GPU tab shows why it's unavailable and everything else works normally. While the CPU boosts (3.3–3.5 GHz) the
 firmware holds the GPU at 2.23 GHz regardless of these settings.
 
 ### LED
 
 - Quick buttons for Off, White Bright, Blue Rich, Purple, Orange Breathe and Pink Breathe.
 - A filterable list of every preset the kernel exposes.
+- **Active Preset** survives closing and reopening the app. After a reboot it shows Unknown until
+  you pick a preset (or Restore on Startup does), because the kernel picks its own default LED.
 - **Loop Animations**: replays breathe and pulse animations every 2–30 s, in the background.
 - **Restore on Startup**: re-applies your last LED preset when the app or service starts.
 

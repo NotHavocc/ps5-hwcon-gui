@@ -29,6 +29,12 @@ class Page(QScrollArea):
         self._timer.setInterval(STATUS_POLL_MS)
         self._timer.timeout.connect(self.refresh_status)
 
+    def focusNextPrevChild(self, next):
+        focused = self.focusWidget()
+        if focused is not None and not (focused.isEnabled() and focused.isVisibleTo(self)):
+            return QWidget.focusNextPrevChild(self, next)
+        return super().focusNextPrevChild(next)
+
     def finish_layout(self):
         self.body.addStretch(1)
 
