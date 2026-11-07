@@ -1,8 +1,9 @@
 import os
+import subprocess
 import sys
 
-from PyQt6.QtCore import QSettings, QSize, Qt
-from PyQt6.QtGui import QAction, QIcon, QPixmap
+from PyQt6.QtCore import QSettings, QSize, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -10,14 +11,13 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMenu,
     QPushButton,
     QStackedWidget,
-    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
+from .backend import _command_env, invoking_user, logger, user_process_options, user_session_env
 from .bridge import BackendBridge
 from . import __version__
 from .common import APP_TITLE
@@ -25,12 +25,19 @@ from .pages.cpu import CpuPage
 from .pages.fan import FanPage
 from .pages.gpu import GpuPage
 from .pages.led import LedPage
-from .widgets import ACCENT, Toast, desktop_notify
+from .pages.memory import MemoryPage
+from .tray import ICON_PATH, TRAY_WAIT_MS, create_tray
+from .widgets import ACCENT, Toast, ToggleRow
 
 ACCENT_HOVER = "#005a9e"
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECK_MARK = os.path.join(PACKAGE_DIR, "check.svg")
-ICON_PATH = os.path.join(PACKAGE_DIR, "icon.png")
+AUTOSTART_ABOUT = (
+    "Opens the app hidden in the system tray when you log in, so Restore on Startup, "
+    "Thermal Guard and LED loops run without opening the window."
+)
+URL_OPENERS = (("xdg-open",), ("gio", "open"))
+KDE_OPENERS = (("kde-open",), ("kde-open5",))
 
 STYLESHEET = f"""
 QMainWindow, QDialog, #root, #pageContent, QScrollArea, QScrollArea > QWidget > QWidget {{
@@ -293,14 +300,45 @@ def app_icon():
     return _icon
 
 
+def open_url(url):
+    if not sys.platform.startswith("linux"):
+        QDesktopServices.openUrl(QUrl(url))
+        return
+    user = invoking_user()
+    options = user_process_options(user)
+    options["env"] = user_session_env(user) if options else _command_env()
+    openers = URL_OPENERS
+    if "KDE" in options["env"].get("XDG_CURRENT_DESKTOP", "").upper().split(":"):
+        openers = KDE_OPENERS + URL_OPENERS
+    for opener in openers:
+        try:
+            subprocess.Popen(
+                [*opener, url],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                **options,
+            )
+            return
+        except OSError as exc:
+            logger.debug(f"{opener[0]} couldn't open {url}: {exc}")
+    logger.warning(f"No URL opener worked for {url}, falling back to Qt")
+    QDesktopServices.openUrl(QUrl(url))
+
+
 class AboutPage(QWidget):
     LINKS = (
         ("My Website", "https://nothavoc.is-a.dev"),
         ("Check For Updates", "https://github.com/NotHavocc/ps5-hwcon-gui/releases/latest"),
     )
 
-    def __init__(self):
+    def __init__(self, bridge, notify):
         super().__init__()
+        self.bridge = bridge
+        self.notify = notify
+        self.autostart = None
+        self.saving_autostart = False
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon = QLabel()
@@ -321,8 +359,8 @@ class AboutPage(QWidget):
         version.setStyleSheet("color: #aaaaaa;")
         layout.addWidget(version)
         desc = QLabel(
-            "Fan curve or target, temperatures, CPU and GPU governors and clocks, "
-            "and indicator LED presets for PS5 Linux."
+            "Fan curve or target, temperatures, CPU and GPU governors and clocks, GPU memory "
+            "and swap, and indicator LED presets for PS5 Linux."
         )
         desc.setWordWrap(True)
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -336,10 +374,51 @@ class AboutPage(QWidget):
         for text, url in self.LINKS:
             link = QLabel(f'<a href="{url}" style="color: {ACCENT}; text-decoration: none;">{text}</a>')
             link.setTextFormat(Qt.TextFormat.RichText)
-            link.setOpenExternalLinks(True)
+            link.linkActivated.connect(open_url)
             link.setAlignment(Qt.AlignmentFlag.AlignCenter)
             link.setStyleSheet("margin-top: 8px; font-size: 14px;")
             layout.addWidget(link)
+        self.autostart_toggle = ToggleRow("Start in Tray at Login", AUTOSTART_ABOUT)
+        self.autostart_toggle.setFixedWidth(420)
+        self.autostart_toggle.setContentsMargins(0, 20, 0, 0)
+        self.autostart_toggle.toggled.connect(self.save_autostart)
+        self.autostart_toggle.hide()
+        layout.addWidget(self.autostart_toggle, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    def load_autostart(self):
+        self.bridge.call("get_autostart", callback=self._autostart_loaded)
+
+    def _autostart_loaded(self, result):
+        if result["success"]:
+            self.autostart = result["data"]
+        self.saving_autostart = False
+        self.render_autostart()
+
+    def save_autostart(self, checked):
+        self.saving_autostart = True
+        self.render_autostart()
+
+        def done(result):
+            self.notify(result)
+            self._autostart_loaded(result)
+
+        self.bridge.call("set_autostart", checked, callback=done)
+
+    def render_autostart(self):
+        state = self.autostart
+        if state is None:
+            return
+        self.autostart_toggle.show()
+        self.autostart_toggle.set_checked(state["enabled"])
+        self.autostart_toggle.setEnabled(
+            (state["available"] or state["enabled"]) and not self.saving_autostart
+        )
+        description = AUTOSTART_ABOUT
+        if not state["available"]:
+            description = state["reason"]
+        elif not state["passwordless"]:
+            description += " Without --passwordless it asks for your password at each login."
+        self.autostart_toggle.set_description(description)
 
     def set_environment(self, data):
         self.environment.setText(
@@ -349,11 +428,17 @@ class AboutPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    PAGES = (("Fan", FanPage), ("CPU", CpuPage), ("GPU", GpuPage), ("LED", LedPage))
+    PAGES = (
+        ("Fan", FanPage),
+        ("CPU", CpuPage),
+        ("GPU", GpuPage),
+        ("Memory", MemoryPage),
+        ("LED", LedPage),
+    )
     ABOUT_ROW = 0
     DEFAULT_ROW = 1
 
-    def __init__(self, bridge, start_hidden=False):
+    def __init__(self, bridge, tray=None, start_hidden=False):
         super().__init__()
         self.bridge = bridge
         self.quitting = False
@@ -412,7 +497,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.toast = Toast(root, above=self.banner)
-        self.about = AboutPage()
+        self.about = AboutPage(bridge, self.notify)
         self.stack.addWidget(self.about)
         QListWidgetItem("About", self.nav)
         self.pages = []
@@ -425,7 +510,7 @@ class MainWindow(QMainWindow):
         last = self.settings.value("last_tab", self.DEFAULT_ROW, type=int)
         self.nav.setCurrentRow(last if 0 <= last < self.nav.count() else self.DEFAULT_ROW)
 
-        self._setup_tray()
+        self._setup_tray(tray)
         hide_button.setVisible(self.tray is not None)
         self.bridge.ready.connect(self._backend_ready)
         if not start_hidden:
@@ -434,33 +519,16 @@ class MainWindow(QMainWindow):
     def _page_at(self, row):
         return self.pages[row - 1] if row > self.ABOUT_ROW else None
 
-    def _setup_tray(self):
-        self.tray = None
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        self.tray = QSystemTrayIcon(app_icon(), self)
-        self.tray.setToolTip(APP_TITLE)
-        menu = QMenu()
-        show_action = QAction("Show", self)
-        show_action.triggered.connect(self.show_window)
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(self.quit)
-        menu.addAction(show_action)
-        menu.addSeparator()
-        menu.addAction(quit_action)
-        # macOS testing slop (bcs im developing GUI on mac)
-        if sys.platform != "darwin":
-            self.tray.setContextMenu(menu)
-        self.tray.activated.connect(
-            lambda reason: self.show_window()
-            if reason == QSystemTrayIcon.ActivationReason.Trigger or sys.platform == "darwin"
-            else None
-        )
-        self._tray_menu = menu
-        self.tray.show()
+    def _setup_tray(self, tray):
+        self.tray = tray
+        if tray is not None:
+            tray.show_requested.connect(self.show_window)
+            tray.quit_requested.connect(self.quit)
 
     def _backend_ready(self):
         self.bridge.call("get_environment", callback=self._environment_loaded)
+        if self.tray is not None:
+            self.about.load_autostart()
         self._select_page(self.nav.currentRow())
 
     def _environment_loaded(self, result):
@@ -501,11 +569,7 @@ class MainWindow(QMainWindow):
                 self._tray_message(result["error"], warning=True)
 
     def _tray_message(self, text, warning=False):
-        if sys.platform.startswith("linux"):
-            desktop_notify(APP_TITLE, text, warning)
-        else:
-            icon = QSystemTrayIcon.MessageIcon.Warning if warning else QSystemTrayIcon.MessageIcon.Information
-            self.tray.showMessage(APP_TITLE, text, icon)
+        self.tray.show_message(text, warning)
 
     def show_window(self):
         self.show()
@@ -539,7 +603,7 @@ class MainWindow(QMainWindow):
         if not self.settings.value("tray_hint_shown", False, type=bool):
             self.settings.setValue("tray_hint_shown", True)
             self._tray_message(
-                "Still running in the tray, so Thermal Guard and LED loops keep working. "
+                "Still running in the tray."
                 "Use Quit to exit."
             )
 
@@ -558,8 +622,11 @@ def run_gui(argv, start_hidden=False):
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 
+    tray = create_tray(app_icon(), wait_ms=TRAY_WAIT_MS if start_hidden else 0)
     bridge = BackendBridge()
-    window = MainWindow(bridge, start_hidden=start_hidden and QSystemTrayIcon.isSystemTrayAvailable())
+    window = MainWindow(bridge, tray, start_hidden=start_hidden and tray is not None)
     bridge.start()
     app.aboutToQuit.connect(bridge.stop)
+    if tray is not None:
+        app.aboutToQuit.connect(tray.stop)
     return app.exec()

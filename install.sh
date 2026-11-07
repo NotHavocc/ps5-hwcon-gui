@@ -6,8 +6,8 @@ APP_NAME="ps5-hwcon-gui"
 PREFIX="/opt/ps5-hwcon-gui"
 BIN_LINK="/usr/local/bin/ps5-hwcon-gui"
 DESKTOP_FILE="/usr/local/share/applications/ps5-hwcon-gui.desktop"
-SERVICE_NAME="ps5-hwcon"
-SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/ps5-hwcon-gui.desktop"
+LEGACY_UNIT="/etc/systemd/system/ps5-hwcon.service"
 SETTINGS_DIR="/var/lib/ps5-hwcon"
 SUDOERS_FILE="/etc/sudoers.d/$APP_NAME"
 PASSWORDLESS_MARKER="$PREFIX/passwordless"
@@ -23,15 +23,12 @@ fi
 
 FORCE=0
 UNINSTALL=0
-SERVICE=0
 PASSWORDLESS=""
 
 usage() {
   cat <<EOF
 Usage: $0 [options]
 
-  --service      Also install and start the headless service, which restores your
-                 settings at boot and runs Thermal Guard and LED loops without a window
   --passwordless Open the app without asking for a password (adds a sudoers rule for
                  your user that only covers this app; kept when you rerun the installer)
   --no-passwordless
@@ -46,7 +43,6 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --service) SERVICE=1; shift ;;
     --passwordless) PASSWORDLESS=1; shift ;;
     --no-passwordless) PASSWORDLESS=0; shift ;;
     --force) FORCE=1; shift ;;
@@ -74,28 +70,23 @@ if [ "$(id -u)" -eq 0 ]; then
   die "Run this as your normal user, not root. It asks for sudo when it needs it."
 fi
 command -v sudo >/dev/null || die "sudo is required"
-
-have_systemd() { command -v systemctl >/dev/null && [ -d /run/systemd/system ]; }
-
-stop_service() {
-  if have_systemd && systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1 \
-    && systemctl is-active --quiet "$SERVICE_NAME"; then
-    sudo systemctl stop "$SERVICE_NAME"
-    return 0
+remove_legacy_unit() {
+  [ -f "$LEGACY_UNIT" ] || return 0
+  if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+    sudo systemctl disable --now "$(basename -- "$LEGACY_UNIT")" >/dev/null 2>&1 || true
   fi
-  return 1
+  sudo rm -f -- "$LEGACY_UNIT"
+  if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+    sudo systemctl daemon-reload
+  fi
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
   step "Removing PS5 Hardware Control"
-  if have_systemd && [ -f "$SERVICE_FILE" ]; then
-    sudo systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-    sudo rm -f -- "$SERVICE_FILE"
-    sudo systemctl daemon-reload
-    ok "Service removed"
-  fi
+  remove_legacy_unit
   sudo rm -rf -- "$PREFIX"
   sudo rm -f -- "$BIN_LINK" "$DESKTOP_FILE" "$SUDOERS_FILE"
+  rm -f -- "$AUTOSTART_FILE"
   ok "App removed (settings in $SETTINGS_DIR are kept)"
   exit 0
 fi
@@ -114,7 +105,7 @@ if [ -z "$SRC_DIR" ]; then
   ok "Downloaded"
 fi
 
-for file in pyproject.toml ps5hwcon/__main__.py ps5hwcon/icon.png packaging/ps5-hwcon.service; do
+for file in pyproject.toml ps5hwcon/__main__.py ps5hwcon/icon.png; do
   [ -f "$SRC_DIR/$file" ] || die "$file is missing from $SRC_DIR. Is this the right repository?"
 done
 
@@ -172,11 +163,7 @@ if [ "$missing" -eq 1 ]; then
   fi
 fi
 
-was_running=0
-if stop_service; then
-  was_running=1
-  ok "Stopped the running $SERVICE_NAME service"
-fi
+remove_legacy_unit
 
 step "Copying the app to $PREFIX"
 sudo mkdir -p "$PREFIX"
@@ -236,7 +223,8 @@ if [ -t 0 ] && command -v sudo >/dev/null; then
 fi
 exec pkexec env DISPLAY="\$DISPLAY" WAYLAND_DISPLAY="\$WAYLAND_DISPLAY" \\
   XAUTHORITY="\${XAUTHORITY:-\$HOME/.Xauthority}" XDG_RUNTIME_DIR="\$XDG_RUNTIME_DIR" \\
-  XDG_SESSION_TYPE="\$XDG_SESSION_TYPE" "\$APP" "\$@"
+  XDG_SESSION_TYPE="\$XDG_SESSION_TYPE" XDG_CURRENT_DESKTOP="\$XDG_CURRENT_DESKTOP" \\
+  DBUS_SESSION_BUS_ADDRESS="\$DBUS_SESSION_BUS_ADDRESS" "\$APP" "\$@"
 EOF
 sudo chmod 755 "$BIN_LINK"
 sudo tee "$DESKTOP_FILE" >/dev/null <<EOF
@@ -262,7 +250,7 @@ if [ "$PASSWORDLESS" -eq 1 ]; then
 # Written by the ps5-hwcon-gui installer. Remove it with: install.sh --no-passwordless
 Cmnd_Alias PS5HWCON = $APP_PATH "", $APP_PATH --tray
 Defaults!PS5HWCON always_set_home, !requiretty
-Defaults!PS5HWCON env_keep += "DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE"
+Defaults!PS5HWCON env_keep += "DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS"
 $(id -un) ALL=(root) NOPASSWD: PS5HWCON
 EOF
   if ! sudo visudo -cf "$sudoers_tmp" >/dev/null; then
@@ -275,21 +263,6 @@ EOF
   ok "$(id -un) can open the app without a password ($SUDOERS_FILE)"
 else
   sudo rm -f -- "$SUDOERS_FILE" "$PASSWORDLESS_MARKER"
-fi
-
-if [ "$SERVICE" -eq 1 ] || [ "$was_running" -eq 1 ]; then
-  step "Installing the headless service"
-  have_systemd || die "systemd is not running, so the service can't be installed"
-  sed "s|^ExecStart=.*|ExecStart=$PREFIX/.venv/bin/$APP_NAME --headless|" \
-    "$PREFIX/src/packaging/ps5-hwcon.service" | sudo tee "$SERVICE_FILE" >/dev/null
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-  if systemctl is-active --quiet "$SERVICE_NAME"; then
-    ok "$SERVICE_NAME is running and starts at boot"
-    warn "Stop it before opening the window: sudo systemctl stop $SERVICE_NAME"
-  else
-    warn "The service didn't start. Check: journalctl -u $SERVICE_NAME"
-  fi
 fi
 
 printf '\n%sDone.%s Start PS5 Hardware Control from the app menu, or run %s\n' "$BOLD" "$RESET" "$BIN_LINK"

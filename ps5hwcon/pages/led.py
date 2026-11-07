@@ -241,7 +241,7 @@ class LedPage(Page):
             else "Re-applies your last LED preset"
         )
         self.restore_toggle.set_description(
-            f"{what} when the app or service starts. The kernel picks its default LED at boot."
+            f"{what} when the app starts. The kernel picks its default LED at boot."
         )
         self.restore_toggle.set_checked(bool(self.loop and self.loop["restore_on_boot"]))
         self.restore_toggle.setEnabled(self.loop is not None and not self.saving_loop)

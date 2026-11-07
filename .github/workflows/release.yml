@@ -49,19 +49,13 @@ jobs:
       - name: Smoke-test the binary
         run: |
           # The runner has no PS5 hardware, so the app only logs missing interfaces.
-          # Each mode should still be running after 10 s; timeout's exit code 124 means it was.
-          export PS5HWCON_SETTINGS_DIR="$RUNNER_TEMP/settings-headless"
-          status=0
-          timeout 10 dist/ps5-hwcon-gui --headless > headless.log 2>&1 || status=$?
-          cat headless.log
-          [ "$status" -eq 124 ] || { echo "::error::Headless mode exited early ($status)"; exit 1; }
-          grep -q "backend starting" headless.log
-
+          # It should still be running after 10 s; timeout's exit code 124 means it was.
           export PS5HWCON_SETTINGS_DIR="$RUNNER_TEMP/settings-gui"
           status=0
           QT_QPA_PLATFORM=offscreen timeout 10 dist/ps5-hwcon-gui > gui.log 2>&1 || status=$?
           cat gui.log
           [ "$status" -eq 124 ] || { echo "::error::The window exited early ($status)"; exit 1; }
+          grep -q "backend starting" gui.log
 
       - name: Package
         run: |

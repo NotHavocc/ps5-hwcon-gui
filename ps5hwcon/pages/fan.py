@@ -205,7 +205,7 @@ class FanPage(Page):
         self.protection_row = advanced.add(InfoRow("Protection Status"))
         background = muted_label(
             "Thermal Guard and Overheat Alarm keep running while the window is closed to the "
-            "tray, or all the time when the headless service is installed."
+            "tray, and stop when you quit."
         )
         advanced.add(background)
 
@@ -446,7 +446,7 @@ class FanPage(Page):
                 else "Re-applies the last target or curve you apply"
             )
             self.restore_toggle.set_description(
-                f"{what} when the app or service starts. "
+                f"{what} when the app starts. "
                 "The kernel resets the curve to its quiet default at boot."
             )
             self.guard_toggle.set_description(
@@ -457,7 +457,7 @@ class FanPage(Page):
             saved = settings["saved_target"] if settings else None
             what = f"Re-applies {saved} °C" if saved is not None else "Re-applies your last target"
             self.restore_toggle.set_description(
-                f"{what} when the app or service starts. "
+                f"{what} when the app starts. "
                 f"The kernel resets the target to {FAN_BOOT_TARGET} °C at boot."
             )
             self.guard_toggle.set_description(

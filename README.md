@@ -9,7 +9,8 @@
 <p align="center">
 A desktop (PyQt6) port of <a href="https://github.com/NotHavocc/ps5-hwcon-plugin">ps5-hwcon-plugin</a> for
 PS5 Linux. It covers the same features as the Decky plugin in a regular window: fan curve or
-target, live temperatures, CPU and GPU governors and clock locks, and indicator LED presets. Decky
+target, live temperatures, CPU and GPU governors and clock locks, GPU memory, zram and zswap, and
+indicator LED presets. Decky
 Loader is not needed.
 </p>
 
@@ -31,14 +32,7 @@ Run this on the PS5 as your normal user (not root):
 curl -fsSL https://raw.githubusercontent.com/NotHavocc/ps5-hwcon-gui/main/install.sh | bash
 ```
 
-To also install the headless service (see below), add `--service`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/NotHavocc/ps5-hwcon-gui/main/install.sh | bash -s -- --service
-```
-
-From a copy of this repo, `./install.sh` (or `./install.sh --service`) does the same without
-downloading anything.
+From a copy of this repo, `./install.sh` does the same without downloading anything.
 
 Run the same command again to update. Your settings are kept. To uninstall:
 
@@ -69,20 +63,22 @@ Settings are stored in `/var/lib/ps5-hwcon/settings.json` when running as root, 
 
 ### Background protection and Restore on Startup
 
-You have two options:
+Thermal Guard, Overheat Alarm and LED loops run inside the app. Closing the window hides it to the
+system tray and they keep running. Use **Quit** in the window or the tray menu to exit, which stops
+them. Settings you applied stay in place until you reboot. The desktop's tray won't accept an icon
+from root, so the icon is shown by a small helper process that runs as you and closes with the app.
 
-- **Keep the app in the tray.** Closing the window hides it to the system tray and the background
-  tasks keep running. Use **Quit** in the window or the tray menu to exit.
-- **Install the headless service** with `./install.sh --service`. It restores saved settings at
-  boot and runs the background tasks without a window.
+To have all of this from the moment you log in, turn on **Start in Tray at Login** on the About page.
+It adds `~/.config/autostart/ps5-hwcon-gui.desktop`, which runs `ps5-hwcon-gui --tray`. The app
+needs root, so install with `--passwordless` or you'll be asked for your password at each login. It
+needs a desktop with a system tray, and waits up to 15 s for the tray to appear after login.
+Uninstalling removes the login item.
 
-Restore on Startup applies each setting as soon as its driver is ready. If a driver is still
-loading when the app or service starts, it keeps retrying for up to 60 s and logs which settings it
-is waiting for, or gave up on.
+Restore on Startup re-applies saved settings when the app starts, each one as soon as its driver is
+ready. If a driver is still loading, it keeps retrying for up to 60 s and logs which settings it is
+waiting for, or gave up on.
 
 Only one instance can run at a time, because two thermal guards would fight over the fan target.
-To change settings while the service is running, stop it (`sudo systemctl stop ps5-hwcon`), use the
-GUI, then start the service again.
 
 ## Features
 
@@ -106,7 +102,7 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
 - **Target presets**: Quiet 85 °C, Default 80 °C, Balanced 72 °C, Cool 65 °C and
   Max Cooling 50 °C.
 - **Manual Target**: any target from 40 to 90 °C.
-- **Restore on Startup**: re-applies your last curve or target when the app or service starts. The
+- **Restore on Startup**: re-applies your last curve or target when the app starts. The
   kernel resets both on every boot.
 - **Thermal Guard**: when the CPU reaches the Overheat Threshold (80–100 °C, default 95), the fan
   switches to Full Speed (or the Max Cooling target). Your setting comes back once the CPU is
@@ -145,25 +141,33 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
   closes everything on screen and quits this app, so it needs `amdgpu` built as a module and a
   systemd display manager. Without those, only the reboot works. If something else is still using
   the GPU the driver can't unload, and the display comes back with nothing changed. See
-  `journalctl -u ps5-hwcon-cu-reload` for what happened. Reloading the driver hasn't been proven on
-  PS5, so a black screen is possible. Restart the console if that happens.
-
-- **Boot partition**: CU Unlock and GPU Memory edit files on the FAT partition the console booted
+  `journalctl -u ps5-hwcon-cu-reload` for what happened.
+- **Boot partition**: CU Unlock, GPU Memory and zswap edit files on the FAT partition the console booted
   from, wherever the distro or desktop mounted it. If it isn't mounted, the app mounts it read-only
   at `/boot/efi` (or `/run/ps5-hwcon/boot` if that's taken), and only makes it writable while
   saving. It picks the partition whose `cmdline.txt` has the running `root=` argument. If it can't
-  find one, or can't tell which one that is, the GPU page shows why.
-- **GPU Memory**: **VRAM** writes `vram.txt` on the boot drive, in the hex format the loader expects,
-  and warns if the existing value looks wrong. It's a minimum that stays reserved from system RAM,
-  so 512 MB suits most games. **GTT Limit** sets `ttm.pages_limit` in `cmdline.txt`, which raises how
-  much system RAM the GPU can use without reserving it, so try this first if a game runs out of
-  memory. Both need a reboot, and **Apply Now** doesn't cover them. See the
-  [guide](https://rmuxnet.gitlab.io/ps5-linux-guide/guide/gpu#vram) for how the two interact.
-
+  find one, or can't tell which one that is, the GPU or Memory page shows why.
 GPU governors need a kernel built with `CONFIG_PS5_GPUFREQ`. The driver isn't part of
 [ps5-linux-patches](https://github.com/ps5-linux/ps5-linux-patches) itself, so on those kernels the
 GPU tab shows why it's unavailable and everything else works normally. While the CPU boosts (3.3–3.5 GHz) the
 firmware holds the GPU at 2.23 GHz regardless of these settings.
+
+### Memory
+
+- **Overview**: live RAM and swap usage, including each swap device.
+- **GPU Memory**: **VRAM** writes `vram.txt` on the boot drive, in the hex format the loader expects,
+  and warns if the existing value looks wrong. It's a minimum that stays reserved from system RAM.
+  6 GB is the recommended choice for gaming; pick 512 MB on a desktop or server that doesn't game,
+  or enter any size from 0.25 to 12 GB under **Custom**. **GTT Limit** sets `ttm.pages_limit` in
+  `cmdline.txt`, which raises how much system RAM the GPU can use without reserving it, so try this
+  if a game runs out of memory. Both need a reboot. See the
+  [wiki](https://wiki.ps5-linux.eu/post-install/all-distros/#memory-and-swap) for how the two
+  interact.
+- **zram**: turns compressed swap in RAM on or off and sets its size and compression, by writing
+  `/etc/systemd/zram-generator.conf` (the previous file is kept as `.bak`). Needs `zram-generator`
+  and a reboot. Turning it off writes a config without a device, which also masks a distro default.
+- **zswap**: switches zswap on or off immediately and saves `zswap.enabled` in `cmdline.txt`. It only
+  helps with swap on a drive, so leave it off when using zram.
 
 ### LED
 
@@ -172,7 +176,7 @@ firmware holds the GPU at 2.23 GHz regardless of these settings.
 - **Active Preset** survives closing and reopening the app. After a reboot it shows Unknown until
   you pick a preset (or Restore on Startup does), because the kernel picks its own default LED.
 - **Loop Animations**: replays breathe and pulse animations every 2–30 s, in the background.
-- **Restore on Startup**: re-applies your last LED preset when the app or service starts.
+- **Restore on Startup**: re-applies your last LED preset when the app starts.
 
 ## Single-file builds
 
@@ -192,7 +196,7 @@ PS5:
 
 ```sh
 chmod +x ps5-hwcon-gui-linux-x86_64
-sudo -E ./ps5-hwcon-gui-linux-x86_64            # or --headless, --tray
+sudo -E ./ps5-hwcon-gui-linux-x86_64            # or --tray
 ```
 
 To build it yourself on Linux x86_64, run `packaging/build_binary.sh` (see the comment at its top).

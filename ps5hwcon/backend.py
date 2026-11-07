@@ -1,7 +1,9 @@
 import asyncio
+import configparser
 import errno
 import glob
 import gzip
+import io
 import json
 import logging
 import os
@@ -103,10 +105,34 @@ BOOT_CMDLINE_MAX = 2047
 RUNNING_CMDLINE_PATH = f"{SYSFS_ROOT}/proc/cmdline"
 VRAM_TOTAL_GLOB = f"{SYSFS_ROOT}/sys/class/drm/card[0-9]*/device/mem_info_vram_total"
 VRAM_DEFAULT_BYTES = 512 * 1024 * 1024
-VRAM_CHOICES_MB = (512, 1024, 2048, 4096, 8192)
+VRAM_MIN_MB = 256
+VRAM_MAX_MB = 12 * 1024
 GTT_CHOICES_GB = (10, 12)
 GTT_ARG = "ttm.pages_limit"
 GTT_PATTERN = re.compile(r"(?:^|\s+)ttm\.pages[-_]limit=(\S*)")
+MEMINFO_PATH = f"{SYSFS_ROOT}/proc/meminfo"
+SWAPS_PATH = f"{SYSFS_ROOT}/proc/swaps"
+PROC_STAT_PATH = f"{SYSFS_ROOT}/proc/stat"
+ZRAM_DEVICE = "zram0"
+ZRAM_BLOCK_DIR = f"{SYSFS_ROOT}/sys/block/{ZRAM_DEVICE}"
+ZRAM_CONFIG_PATH = f"{SYSFS_ROOT}/etc/systemd/zram-generator.conf"
+ZRAM_VENDOR_CONFIG_PATHS = (
+    f"{SYSFS_ROOT}/usr/lib/systemd/zram-generator.conf",
+    f"{SYSFS_ROOT}/lib/systemd/zram-generator.conf",
+)
+ZRAM_GENERATOR_PATHS = (
+    f"{SYSFS_ROOT}/usr/lib/systemd/system-generators/zram-generator",
+    f"{SYSFS_ROOT}/lib/systemd/system-generators/zram-generator",
+)
+ZRAM_SIZES = ("ram / 4", "ram / 2", "ram")
+ZRAM_ALGORITHMS = ("zstd", "lz4", "lzo-rle")
+ZRAM_DISABLED_CONFIG = (
+    "# Written by PS5 Hardware Control: zram is off. This file masks any distro default.\n"
+)
+ZSWAP_DIR = f"{SYSFS_ROOT}/sys/module/zswap/parameters"
+ZSWAP_ENABLED_PATH = f"{ZSWAP_DIR}/enabled"
+ZSWAP_ARG = "zswap.enabled"
+ZSWAP_PATTERN = re.compile(r"(?:^|\s+)zswap\.enabled=(\S*)")
 AMDGPU_REFCNT_PATH = f"{SYSFS_ROOT}/sys/module/amdgpu/refcnt"
 DISPLAY_MANAGER_PATH = f"{SYSFS_ROOT}/etc/systemd/system/display-manager.service"
 CU_RELOAD_UNIT = "ps5-hwcon-cu-reload"
@@ -163,6 +189,36 @@ def _default_settings_dir():
 
 SETTINGS_DIR = os.path.abspath(_default_settings_dir())
 SETTINGS_PATH = os.path.join(SETTINGS_DIR, "settings.json")
+INSTALL_PREFIX = "/opt/ps5-hwcon-gui"
+LAUNCHER = "/usr/local/bin/ps5-hwcon-gui"
+LAUNCHER_PATH = f"{SYSFS_ROOT}{LAUNCHER}"
+PASSWORDLESS_MARKER = f"{SYSFS_ROOT}{INSTALL_PREFIX}/passwordless"
+AUTOSTART_FILE = os.path.join(".config", "autostart", "ps5-hwcon-gui.desktop")
+AUTOSTART_ENTRY = f"""[Desktop Entry]
+Type=Application
+Name=PS5 Hardware Control
+Comment=Starts PS5 Hardware Control in the system tray
+Exec={LAUNCHER} --tray
+Icon={INSTALL_PREFIX}/src/ps5hwcon/icon.png
+Terminal=false
+X-GNOME-Autostart-enabled=true
+"""
+AUTOSTART_WRITE_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1.tmp" && mv -f -- "$1.tmp" "$1"'
+SESSION_ENV = (
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_DATA_DIRS",
+    "DESKTOP_SESSION",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "KDE_FULL_SESSION",
+    "KDE_SESSION_VERSION",
+    "LANG",
+    "LC_ALL",
+)
 DEFAULT_SETTINGS = {
     "restore_on_boot": False,
     "saved_target": None,
@@ -1245,6 +1301,71 @@ def _command_env():
     return env
 
 
+def invoking_user():
+    import pwd
+
+    if os.geteuid() != 0:
+        return pwd.getpwuid(os.getuid())
+    for name in ("SUDO_UID", "PKEXEC_UID"):
+        uid = os.environ.get(name, "")
+        if uid.isdigit() and int(uid) != 0:
+            try:
+                return pwd.getpwuid(int(uid))
+            except KeyError:
+                continue
+    return None
+
+
+def user_process_options(user):
+    if user is None or user.pw_uid == os.geteuid():
+        return {}
+    return {
+        "cwd": user.pw_dir if os.path.isdir(user.pw_dir) else "/",
+        "user": user.pw_uid,
+        "group": user.pw_gid,
+        "extra_groups": os.getgrouplist(user.pw_name, user.pw_gid),
+    }
+
+
+def user_session_env(user):
+    env = {name: os.environ[name] for name in SESSION_ENV if os.environ.get(name)}
+    runtime = env.get("XDG_RUNTIME_DIR", f"/run/user/{user.pw_uid}")
+    if os.path.isdir(runtime):
+        env["XDG_RUNTIME_DIR"] = runtime
+        bus = os.path.join(runtime, "bus")
+        if "DBUS_SESSION_BUS_ADDRESS" not in env and os.path.exists(bus):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    env.update(
+        HOME=user.pw_dir,
+        USER=user.pw_name,
+        LOGNAME=user.pw_name,
+        SHELL=user.pw_shell or "/bin/sh",
+        PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+    )
+    for name, value in _user_manager_env(user, env).items():
+        if name in SESSION_ENV:
+            env.setdefault(name, value)
+    return env
+
+
+def _user_manager_env(user, env):
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=IO_TIMEOUT_SECONDS,
+            env=env,
+            **user_process_options(user),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
 def _run_command(*args):
     try:
         return subprocess.run(
@@ -1268,6 +1389,55 @@ def _command_error(result, name):
     if result is None:
         return f"{name} couldn't be run."
     return f"{name} failed: {result.stderr.strip() or f'exit code {result.returncode}'}."
+
+
+def _autostart_path(user):
+    return os.path.join(user.pw_dir, AUTOSTART_FILE)
+
+
+def _read_autostart_sync():
+    user = invoking_user()
+    reason = None
+    if not sys.platform.startswith("linux"):
+        reason = "Starting at login is only supported on Linux."
+    elif user is None:
+        reason = "Open the app through sudo or pkexec to start it at login."
+    elif not os.path.isfile(LAUNCHER_PATH):
+        reason = "Install the app with install.sh to start it at login."
+    return {
+        "available": reason is None,
+        "reason": reason,
+        "enabled": user is not None and os.path.isfile(_autostart_path(user)),
+        "passwordless": os.path.isfile(PASSWORDLESS_MARKER),
+    }
+
+
+def _write_autostart_sync(enabled):
+    user = invoking_user()
+    if user is None:
+        return "There's no desktop user to add the login item for"
+    path = _autostart_path(user)
+    if enabled:
+        args = ("sh", "-c", AUTOSTART_WRITE_SCRIPT, "sh", path)
+        data = AUTOSTART_ENTRY
+    else:
+        args = ("rm", "-f", "--", path)
+        data = None
+    try:
+        result = subprocess.run(
+            args,
+            input=data,
+            capture_output=True,
+            text=True,
+            timeout=IO_TIMEOUT_SECONDS,
+            env=_command_env(),
+            **user_process_options(user),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"Updating {path} failed: {exc}"
+    if result.returncode != 0:
+        return f"Updating {path} failed: {result.stderr.strip() or f'exit code {result.returncode}'}"
+    return None
 
 
 def _root_argument(line):
@@ -1298,8 +1468,7 @@ def _fat_mounts():
         return mounts
     for row in rows:
         if len(row) >= 3 and row[2] in BOOT_FILESYSTEMS:
-            mount = re.sub(r"\\(\d{3})", lambda code: chr(int(code.group(1), 8)), row[1])
-            mounts.append(f"{SYSFS_ROOT}{mount}")
+            mounts.append(f"{SYSFS_ROOT}{_unescape_octal(row[1])}")
     return mounts
 
 def _boot_mount():
@@ -1508,6 +1677,177 @@ def _read_gpu_memory_sync():
         "gtt_pages": gtt_pages,
         "gtt_pending": gtt_pages != booted_pages,
     }
+
+
+def _format_megabytes(megabytes):
+    return f"{megabytes / 1024:g} GB" if megabytes >= 1024 else f"{megabytes} MB"
+
+
+def _unescape_octal(text):
+    return re.sub(r"\\(\d{3})", lambda code: chr(int(code.group(1), 8)), text)
+
+
+def _kernel_bool(value):
+    return value.strip().lower() in ("1", "y", "yes", "on", "true")
+
+
+def _read_meminfo():
+    values = {}
+    with open(MEMINFO_PATH, encoding="ascii", errors="replace") as handle:
+        for line in handle:
+            key, _, rest = line.partition(":")
+            fields = rest.split()
+            if fields and fields[0].isdigit():
+                values[key] = int(fields[0]) * 1024
+    return values
+
+
+def _read_swaps():
+    with open(SWAPS_PATH, encoding="utf-8", errors="replace") as handle:
+        rows = [row.split() for row in handle.read().splitlines()[1:]]
+    return [
+        {
+            "name": _unescape_octal(row[0]),
+            "type": row[1],
+            "size": int(row[2]) * 1024,
+            "used": int(row[3]) * 1024,
+        }
+        for row in rows
+        if len(row) >= 4 and row[2].isdigit() and row[3].isdigit()
+    ]
+
+
+def _read_zram_running():
+    if not os.path.isdir(ZRAM_BLOCK_DIR):
+        return None
+    algorithms = _read_sysfs(f"{ZRAM_BLOCK_DIR}/comp_algorithm").split()
+    selected = next((name.strip("[]") for name in algorithms if name.startswith("[")), None)
+    stats = _read_sysfs(f"{ZRAM_BLOCK_DIR}/mm_stat").split()
+    return {
+        "disksize": _coerce_int(_read_sysfs(f"{ZRAM_BLOCK_DIR}/disksize")) or 0,
+        "algorithm": selected,
+        "original": _coerce_int(stats[0]) if stats else None,
+        "compressed": _coerce_int(stats[1]) if len(stats) > 1 else None,
+    }
+
+
+def _read_zswap_running():
+    if not os.path.isdir(ZSWAP_DIR):
+        return None
+
+    def parameter(name):
+        try:
+            return _read_sysfs(f"{ZSWAP_DIR}/{name}")
+        except OSError:
+            return None
+
+    return {
+        "enabled": _kernel_bool(parameter("enabled") or ""),
+        "compressor": parameter("compressor"),
+        "max_pool_percent": _coerce_int(parameter("max_pool_percent") or ""),
+    }
+
+
+def _zram_swap_active(swaps):
+    return any(os.path.basename(swap["name"]) == ZRAM_DEVICE for swap in swaps)
+
+
+def _read_memory_status_sync():
+    meminfo = _read_meminfo()
+    swaps = _read_swaps()
+    return {
+        "ram_total": meminfo.get("MemTotal"),
+        "ram_available": meminfo.get("MemAvailable"),
+        "swap_total": meminfo.get("SwapTotal"),
+        "swap_free": meminfo.get("SwapFree"),
+        "swaps": swaps,
+        "zram": _read_zram_running() if _zram_swap_active(swaps) else None,
+        "zswap": _read_zswap_running(),
+    }
+
+
+def _changed_since_boot(path):
+    try:
+        with open(PROC_STAT_PATH, encoding="ascii", errors="replace") as handle:
+            booted = next(int(line.split()[1]) for line in handle if line.startswith("btime "))
+        return os.path.getmtime(path) > booted
+    except (OSError, StopIteration, ValueError, IndexError):
+        return False
+
+
+def _zram_vendor_config():
+    return next((path for path in ZRAM_VENDOR_CONFIG_PATHS if os.path.isfile(path)), None)
+
+
+def _load_zram_config(path):
+    parser = configparser.ConfigParser(interpolation=None)
+    if path is not None:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            parser.read_string(handle.read(), source=path)
+    return parser
+
+
+def _read_swap_settings_sync():
+    source = ZRAM_CONFIG_PATH if os.path.isfile(ZRAM_CONFIG_PATH) else _zram_vendor_config()
+    zram_error = None
+    try:
+        config = _load_zram_config(source)
+    except configparser.Error as exc:
+        config = configparser.ConfigParser(interpolation=None)
+        zram_error = f"{source} couldn't be parsed: {exc}"
+    section = config[ZRAM_DEVICE] if config.has_section(ZRAM_DEVICE) else None
+    algorithm = section.get("compression-algorithm") if section else None
+    swaps = _read_swaps()
+    running = _read_zram_running() if _zram_swap_active(swaps) else None
+
+    cmdline_path = _boot_file("cmdline.txt")
+    zswap_configured = None
+    if cmdline_path is not None:
+        values = ZSWAP_PATTERN.findall(_split_cmdline(_read_cmdline_sync(cmdline_path))[0])
+        zswap_configured = _kernel_bool(values[-1]) if values else None
+    configured_algorithm = algorithm.split()[0] if algorithm else None
+    return {
+        "zram_generator": any(os.path.isfile(path) for path in ZRAM_GENERATOR_PATHS),
+        "zram_source": source,
+        "zram_error": zram_error,
+        "zram_enabled": section is not None,
+        "zram_size": section.get("zram-size") if section else None,
+        "zram_algorithm": configured_algorithm,
+        "zram_pending": (section is not None) != (running is not None)
+        or (source == ZRAM_CONFIG_PATH and _changed_since_boot(source))
+        or bool(
+            running
+            and configured_algorithm
+            and running["algorithm"]
+            and configured_algorithm != running["algorithm"]
+        ),
+        "zswap_configured": zswap_configured,
+        "boot_ready": cmdline_path is not None,
+        "boot_error": None if cmdline_path else _boot_missing(),
+    }
+
+
+def _write_zram_config_sync(enabled, size, algorithm):
+    original = None
+    if os.path.isfile(ZRAM_CONFIG_PATH):
+        with open(ZRAM_CONFIG_PATH, "rb") as handle:
+            original = handle.read()
+    if enabled:
+        config = _load_zram_config(ZRAM_CONFIG_PATH if original else _zram_vendor_config())
+        if not config.has_section(ZRAM_DEVICE):
+            config.add_section(ZRAM_DEVICE)
+        config[ZRAM_DEVICE]["zram-size"] = size
+        config[ZRAM_DEVICE]["compression-algorithm"] = algorithm
+        buffer = io.StringIO()
+        buffer.write("# Written by PS5 Hardware Control\n")
+        config.write(buffer)
+        data = buffer.getvalue()
+    else:
+        data = ZRAM_DISABLED_CONFIG
+    if data.encode("utf-8") == original:
+        return
+    os.makedirs(os.path.dirname(ZRAM_CONFIG_PATH), exist_ok=True)
+    _replace_file_sync(ZRAM_CONFIG_PATH, data.encode("utf-8"), original)
 
 
 def _read_active_cus():
@@ -2271,8 +2611,12 @@ class Backend:
         return _ok("GPU memory read", result, log=False)
 
     async def set_vram(self, megabytes):
-        if megabytes not in VRAM_CHOICES_MB:
-            return _fail(f"Unsupported VRAM size: {megabytes!r}")
+        megabytes = _coerce_int(megabytes)
+        if megabytes is None or not VRAM_MIN_MB <= megabytes <= VRAM_MAX_MB:
+            return _fail(
+                f"VRAM must be between {_format_megabytes(VRAM_MIN_MB)} and "
+                f"{_format_megabytes(VRAM_MAX_MB)}"
+            )
         async with _boot_lock:
             await _ensure_boot_mounted()
             cmdline_path = _boot_file("cmdline.txt")
@@ -2296,7 +2640,9 @@ class Backend:
             )
         if not ok:
             return _fail(status)
-        return _ok(f"VRAM set to {megabytes} MB in vram.txt. Reboot to apply.", status)
+        return _ok(
+            f"VRAM set to {_format_megabytes(megabytes)} in vram.txt. Reboot to apply.", status
+        )
 
     async def set_gtt_limit(self, gigabytes):
         if gigabytes is not None and gigabytes not in GTT_CHOICES_GB:
@@ -2326,6 +2672,91 @@ class Backend:
             return _fail(status)
         return _ok("GTT limit saved in cmdline.txt. Reboot to apply.", status)
 
+    async def get_memory_status(self):
+        ok, result = await _guarded_io(
+            "Reading memory status", MEMINFO_PATH, _read_memory_status_sync
+        )
+        if not ok:
+            return _fail(result)
+        return _ok("Memory status read", result, log=False)
+
+    async def get_swap_settings(self):
+        async with _boot_lock:
+            await _ensure_boot_mounted()
+            ok, result = await _guarded_io(
+                "Reading swap settings", ZRAM_CONFIG_PATH, _read_swap_settings_sync
+            )
+        if not ok:
+            return _fail(result)
+        return _ok("Swap settings read", result, log=False)
+
+    async def set_zram(self, enabled, size=None, algorithm=None):
+        if not isinstance(enabled, bool):
+            return _fail(f"Invalid zram state: {enabled!r}")
+        if enabled and size not in ZRAM_SIZES:
+            return _fail(f"Unsupported zram size: {size!r}")
+        if enabled and algorithm not in ZRAM_ALGORITHMS:
+            return _fail(f"Unsupported zram compression: {algorithm!r}")
+        if enabled and not any(os.path.isfile(path) for path in ZRAM_GENERATOR_PATHS):
+            return _fail("zram-generator isn't installed. Install it with your package manager.")
+        async with _boot_lock:
+            ok, error = await _guarded_io(
+                "Updating the zram config",
+                ZRAM_CONFIG_PATH,
+                _write_zram_config_sync,
+                enabled,
+                size,
+                algorithm,
+            )
+            if not ok:
+                return _fail(error)
+            ok, status = await _guarded_io(
+                "Reading swap settings", ZRAM_CONFIG_PATH, _read_swap_settings_sync
+            )
+        if not ok:
+            return _fail(status)
+        state = f"set to {size} with {algorithm}" if enabled else "turned off"
+        return _ok(f"zram {state}. Reboot to apply.", status)
+
+    async def set_zswap(self, enabled):
+        if not isinstance(enabled, bool):
+            return _fail(f"Invalid zswap state: {enabled!r}")
+        if not os.path.isdir(ZSWAP_DIR):
+            return _fail("This kernel doesn't include zswap")
+        ok, error = await _guarded_io(
+            "Updating zswap",
+            ZSWAP_ENABLED_PATH,
+            _write_sysfs,
+            ZSWAP_ENABLED_PATH,
+            "Y" if enabled else "N",
+        )
+        if not ok:
+            return _fail(error)
+        async with _boot_lock:
+            await _ensure_boot_mounted()
+            path = _boot_file("cmdline.txt")
+            persisted = path is not None
+            if persisted:
+                ok, result = await _guarded_io(
+                    "Updating cmdline.txt",
+                    path,
+                    _with_writable_boot,
+                    _set_cmdline_args_sync,
+                    path,
+                    ((ZSWAP_PATTERN, f"{ZSWAP_ARG}={1 if enabled else 0}"),),
+                )
+                if not ok or result:
+                    return _fail(f"zswap changed for this boot, but {result}")
+            ok, status = await _guarded_io(
+                "Reading swap settings", ZRAM_CONFIG_PATH, _read_swap_settings_sync
+            )
+        if not ok:
+            return _fail(status)
+        state = "on" if enabled else "off"
+        if not persisted:
+            return _ok(f"zswap turned {state} until reboot. {_boot_missing()}", status)
+        return _ok(f"zswap turned {state} and saved in cmdline.txt", status)
+
     async def reload_cu_unlock(self):
         async with _boot_lock:
             ok, state = await _guarded_io(
@@ -2351,6 +2782,30 @@ class Backend:
             if not ok or error:
                 return _fail(error)
         return _ok("GPU driver reload started")
+
+    async def get_autostart(self):
+        ok, result = await _guarded_io("Reading the login item", AUTOSTART_FILE, _read_autostart_sync)
+        if not ok:
+            return _fail(result)
+        return _ok("Login item read", result, log=False)
+
+    async def set_autostart(self, enabled):
+        if not isinstance(enabled, bool):
+            return _fail(f"Invalid autostart value: {enabled!r}")
+        ok, error = await _guarded_io(
+            "Updating the login item", AUTOSTART_FILE, _write_autostart_sync, enabled
+        )
+        if not ok or error:
+            return _fail(error)
+        ok, status = await _guarded_io("Reading the login item", AUTOSTART_FILE, _read_autostart_sync)
+        if not ok:
+            return _fail(status)
+        if not enabled:
+            return _ok("The app no longer starts at login", status)
+        message = "The app starts in the tray when you log in"
+        if not status["passwordless"]:
+            message += ". It asks for your password each time unless installed with --passwordless"
+        return _ok(message, status)
 
     async def get_environment(self):
         missing = [

@@ -248,7 +248,7 @@ class FrequencyPage(Page):
             else f"Re-applies your last {self.restore_subject}"
         )
         self.restore_toggle.set_description(
-            f"{what} when the app or service starts. {self.boot_note}"
+            f"{what} when the app starts. {self.boot_note}"
         )
         self.restore_toggle.set_checked(bool(settings and settings["restore_on_boot"]))
         self.restore_toggle.setEnabled(settings is not None and not self.saving_settings)
