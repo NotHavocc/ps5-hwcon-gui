@@ -9,6 +9,7 @@ from ..common import (
     FAN_MAX_COOLING,
     FAN_MIN,
     FAN_MODE_CURVE,
+    FAN_MODE_FIRMWARE,
     FAN_MODE_FULL,
     FAN_MODE_LABELS,
     FAN_PRESETS,
@@ -29,6 +30,7 @@ from .base import Page
 
 TILE_COLUMNS = 2
 FULL_SPEED_ID = "full"
+FIRMWARE_ID = "firmware"
 VIEW_TARGET = "target"
 VIEW_CURVE = "curve"
 
@@ -77,6 +79,7 @@ class FanPage(Page):
         self.slider_touched = False
         self.curve_touched = False
         self.view = None
+        self.firmware_rows = []
         self.threshold = GUARD_DEFAULT
         self._threshold_timer = QTimer(self)
         self._threshold_timer.setSingleShot(True)
@@ -122,6 +125,7 @@ class FanPage(Page):
         self.curve_preset_buttons[FULL_SPEED_ID] = full
         buttons.append(full)
         self.curve_presets_card.add(ButtonGrid(columns=2)).set_buttons(buttons)
+        self._add_firmware_row(self.curve_presets_card)
 
         self.curve_card = self.add(Card("Fan Curve"))
         self.curve_card.add(
@@ -157,6 +161,7 @@ class FanPage(Page):
             self.preset_buttons[preset_id] = (button, temp)
             buttons.append(button)
         self.preset_grid.set_buttons(buttons)
+        self._add_firmware_row(presets)
 
         self.manual_card = manual = self.add(Card("Manual Target"))
         self.target_slider = manual.add(
@@ -211,6 +216,17 @@ class FanPage(Page):
 
         self.finish_layout()
         self.render()
+
+    def _add_firmware_row(self, card):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(muted_label("Hands the fan back to the console's own fan table."), 1)
+        button = QPushButton("Return to Console Firmware")
+        button.clicked.connect(lambda: self.apply_mode(FIRMWARE_ID, FAN_MODE_FIRMWARE))
+        layout.addWidget(button)
+        card.add(row)
+        self.firmware_rows.append((row, button))
 
     def on_activate(self):
         self.refresh_status(callback=lambda r: self.notify(r, quiet=True))
@@ -415,10 +431,19 @@ class FanPage(Page):
             target_text = f"{target} °C"
         else:
             target_text = "Custom curve" if fan is not None else "Unavailable"
+        curve_overridden = fan is not None and fan["mode"] != FAN_MODE_CURVE
+        if curve_overridden:
+            target_text = FAN_MODE_LABELS.get(fan["mode"], f"Mode {fan['mode']}")
         target_error = None if curve_mode else self.status_error
         self.target_row.set(target_text, target_error, error=bool(target_error))
         if curve_mode:
             self._render_curve(fan, busy)
+        for row, button in self.firmware_rows:
+            row.setVisible(curve_mode)
+            button.setEnabled(not busy and fan is not None and fan["mode"] != FAN_MODE_FIRMWARE)
+            button.setText(
+                "Applying…" if self.applying == FIRMWARE_ID else "Return to Console Firmware"
+            )
 
         overheated = bool(guard and (guard["active"] or guard["alarm_active"]))
         self.overheat_row.setVisible(overheated)
@@ -427,14 +452,14 @@ class FanPage(Page):
 
         for preset_id, (button, temp) in self.preset_buttons.items():
             button.setEnabled(not busy)
-            button.set_selected(
-                target == temp and not (fan is not None and fan["mode"] == FAN_MODE_FULL)
-            )
+            button.set_selected(target == temp and not curve_overridden)
             button.set_busy(self.applying == preset_id)
 
         self.target_slider.setEnabled(not busy)
         self.apply_button.setEnabled(
-            not busy and not loading and self.target_slider.value() != target
+            not busy
+            and not loading
+            and (self.target_slider.value() != target or curve_overridden)
         )
         self.apply_button.setText("Applying…" if self.applying == "manual" else "Apply Target")
 

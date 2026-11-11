@@ -34,8 +34,13 @@ FAN_CURVE_TEMP_MAX = 90
 FAN_PWM_MAX = 255
 FAN_MODE_FULL = 0
 FAN_MODE_CURVE = 2
-FAN_MODE_LABELS = {FAN_MODE_FULL: "Full Speed", 1: "Manual", FAN_MODE_CURVE: "Curve"}
-# Temperatures of the driver's built-in quiet curve; its PWM values depend on the board.
+FAN_MODE_FIRMWARE = 3
+FAN_MODE_LABELS = {
+    FAN_MODE_FULL: "Full Speed",
+    1: "Manual",
+    FAN_MODE_CURVE: "Curve",
+    FAN_MODE_FIRMWARE: "Console Firmware",
+}
 FAN_QUIET_TEMPS = [50, 60, 65, 70, 75, 80, 85, 87]
 FAN_QUIET_STOP = 45
 
@@ -52,7 +57,7 @@ def _curve(stop, points):
     return {"stop": stop, "points": [[temp, percent_to_pwm(pct)] for temp, pct in points]}
 
 
-# (id, label, subtitle, curve); a curve of None means the driver's default.
+# la presets
 FAN_CURVE_PRESETS = [
     ("quiet", "Quiet", "Kernel default", None),
     (

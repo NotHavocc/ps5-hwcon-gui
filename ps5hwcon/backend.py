@@ -32,6 +32,7 @@ FAN_PWM_MAX = 255
 FAN_MODE_FULL = 0
 FAN_MODE_MANUAL = 1
 FAN_MODE_CURVE = 2
+FAN_MODE_FIRMWARE = 3
 
 FAN_TARGET_CURVE_OFFSETS = (-12, -8, -5, -2, 0, 2, 4, 6)
 FAN_TARGET_CURVE_PERCENT = (10, 15, 22, 32, 45, 60, 80, 100)
@@ -2045,6 +2046,8 @@ async def _restore_fan():
             ok, result = await _guarded_io(
                 "Restoring fan curve", FAN_HWMON_DESC, _write_fan_curve_sync, curve
             )
+            if ok:
+                ok, result = await _set_fan_mode_locked("Switching fan to curve mode", FAN_MODE_CURVE)
         if not ok:
             return False, result
         restored = _curve_target(curve)
@@ -2326,13 +2329,13 @@ class Backend:
 
     async def set_fan_mode(self, mode):
         value = _coerce_int(mode)
-        if value not in (FAN_MODE_FULL, FAN_MODE_CURVE):
+        if value not in (FAN_MODE_FULL, FAN_MODE_CURVE, FAN_MODE_FIRMWARE):
             return _fail(f"Invalid fan mode: {mode!r}")
         async with _fan_lock:
             ok, deferred = await _set_fan_mode_locked("Setting fan mode", value)
         if not ok:
             return _fail(deferred)
-        label = "full speed" if value == FAN_MODE_FULL else "curve"
+        label = {FAN_MODE_FULL: "full speed", FAN_MODE_CURVE: "curve", FAN_MODE_FIRMWARE: "console firmware"}[value]
         if deferred:
             return _ok(f"Thermal guard is cooling. The fan switches to {label} once the CPU cools down")
         return _ok(f"Fan set to {label}", {"mode": value})
