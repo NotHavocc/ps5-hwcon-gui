@@ -74,7 +74,10 @@ class LedPage(Page):
         self.curated_grid.set_buttons(buttons)
         refresh_row = QHBoxLayout()
         refresh_row.addStretch(1)
-        self.refresh_button = QPushButton("Refresh Presets")
+        self.restore_toggle = presets.add(ToggleRow("Restore on Startup", hint="Re-applies the preset at boot."))
+        self.restore_toggle.toggled.connect(lambda checked: self.save_loop(None, None, checked))
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("cancelBtn")
         self.refresh_button.clicked.connect(lambda: self.refresh(quiet=False))
         refresh_row.addWidget(self.refresh_button)
         presets.add_layout(refresh_row)
@@ -83,23 +86,19 @@ class LedPage(Page):
         self.loop_toggle = animations.add(
             ToggleRow(
                 "Loop Animations",
-                "The firmware plays breathe and pulse animations once. This replays them so "
-                "they keep going, even with the window closed to the tray.",
+                "Replays breathe and pulse animations so they keep going.",
+                hint="Keeps animations playing.",
             )
         )
         self.loop_toggle.toggled.connect(lambda checked: self.save_loop(checked, None))
         self.loop_slider = animations.add(
-            SliderRow("Replay Every", "Match this to how long the animation runs.", suffix=" s")
+            SliderRow("Replay Every", "Match the animation's length.", suffix=" s", hint="Match the animation's length.")
         )
         self.loop_slider.set_range(
             LED_LOOP_MIN, LED_LOOP_MAX, value=LED_LOOP_DEFAULT, reset_value=LED_LOOP_DEFAULT
         )
         self.loop_slider.changed.connect(self._loop_seconds_moved)
         self.loop_row = animations.add(InfoRow("Loop Status"))
-
-        startup = self.add(Card("Startup"))
-        self.restore_toggle = startup.add(ToggleRow("Restore on Startup"))
-        self.restore_toggle.toggled.connect(lambda checked: self.save_loop(None, None, checked))
 
         self.all_card = self.add(Card("All Presets"))
         self.filter = self.all_card.add(QLineEdit())
@@ -221,7 +220,7 @@ class LedPage(Page):
             button.set_selected(self.active == preset_id)
             button.set_busy(self.pending == preset_id)
         self.refresh_button.setEnabled(not busy)
-        self.refresh_button.setText("Refreshing…" if self.loading else "Refresh Presets")
+        self.refresh_button.setText("Refreshing…" if self.loading else "Refresh")
 
         self.loop_toggle.set_checked(loop_enabled)
         self.loop_toggle.setEnabled(self.loop is not None and not self.saving_loop)
@@ -241,7 +240,7 @@ class LedPage(Page):
             else "Re-applies your last LED preset"
         )
         self.restore_toggle.set_description(
-            f"{what} when the app starts. The kernel picks its default LED at boot."
+            f"{what} when the app starts."
         )
         self.restore_toggle.set_checked(bool(self.loop and self.loop["restore_on_boot"]))
         self.restore_toggle.setEnabled(self.loop is not None and not self.saving_loop)

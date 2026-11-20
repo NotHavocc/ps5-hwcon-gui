@@ -7,6 +7,8 @@ from ..common import STATUS_POLL_MS
 class Page(QScrollArea):
     title = ""
     poll_method = None
+    console = None
+    needs_telemetry = False
 
     def __init__(self, bridge, notify, parent=None):
         super().__init__(parent)
@@ -78,6 +80,16 @@ class Page(QScrollArea):
                 self._polling = False
 
         self.bridge.call(self.poll_method, callback=deliver)
+
+    def set_console(self, console):
+        self.console = console
+        self.on_console()
+
+    def is_pro(self):
+        return bool(self.console and self.console["pro"])
+
+    def on_console(self):
+        pass
 
     def on_activate(self):
         pass

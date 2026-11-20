@@ -1,6 +1,16 @@
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
-from ..widgets import ButtonGrid, Card, ChoiceButton, InfoRow, ToggleRow, muted_label
+from ..widgets import (
+    ButtonGrid,
+    Card,
+    ChoiceButton,
+    InfoRow,
+    SliderRow,
+    ToggleRow,
+    muted_label,
+    restyle,
+    short_text,
+)
 from .base import Page
 
 
@@ -11,7 +21,7 @@ RECOMMENDED_VRAM_MB = 6 * 1024
 CUSTOM_VRAM_MIN_GB = 0.25
 CUSTOM_VRAM_MAX_GB = 12
 VRAM_CHOICES = (
-    (512, "512 MB", "Loader default"),
+    (512, "512 MB", ""),
     (1024, "1 GB", ""),
     (2048, "2 GB", ""),
     (4096, "4 GB", ""),
@@ -24,27 +34,18 @@ ZRAM_ALGORITHMS = (("zstd", "zstd", "Best ratio"), ("lz4", "lz4", "Fastest"), ("
 DEFAULT_ZRAM_SIZE = "ram / 2"
 DEFAULT_ZRAM_ALGORITHM = "zstd"
 
-OVERVIEW_ABOUT = (
-    "The CPU and GPU share one 16 GB pool, about 14 GB of it usable by Linux. Memory given to "
-    "the GPU is taken from everything else."
+OVERVIEW_ABOUT = "The CPU and GPU share one 16 GB pool, so VRAM comes out of RAM."
+VRAM_ABOUT = "Reserved for the GPU all the time. 6 GB suits most games."
+VRAM_ABOUT_PRO = " On the Pro, try 4 GB if games crash after long sessions."
+GTT_ABOUT = "Extra RAM the GPU can borrow when needed. Raise this first if a game runs out of memory."
+ZRAM_ABOUT = "Compressed swap in RAM. Applies after a reboot."
+ZSWAP_ABOUT = "Compresses swap on a drive. Leave it off if you use zram."
+SWAPFILE_ABOUT = (
+    "Swap on the drive Linux runs from, at /swapfile. Best on an M.2 or USB SSD: on a USB flash "
+    "drive it's slow and wears the drive out."
 )
-VRAM_ABOUT = (
-    "Memory reserved for the GPU all the time, taken from system RAM. 6 GB is the usual choice "
-    "for gaming."
-)
-GTT_ABOUT = (
-    "How much system RAM the GPU can use on top of that. If a game runs out of memory, raise "
-    "this first, because the RAM stays free when you aren't gaming."
-)
-ZRAM_ABOUT = (
-    "A compressed swap device in RAM. It's fast and doesn't wear out a drive, but the "
-    "compressed pages still use RAM. Saved in /etc/systemd/zram-generator.conf and applied "
-    "after a reboot."
-)
-ZSWAP_ABOUT = (
-    "Compresses pages in RAM before they're written to a swap file or partition. It only helps "
-    "with swap on a drive. With zram it compresses everything twice, so leave it off."
-)
+SWAPPINESS_ABOUT = "How readily Linux swaps. Lower keeps more in RAM. With zram, a higher value is normal."
+SWAPPINESS_DEFAULT = 60
 
 
 def format_bytes(size):
@@ -73,11 +74,12 @@ class MemoryPage(Page):
         overview = self.add(Card("Overview"))
         self.ram_row = overview.add(InfoRow("RAM"))
         self.swap_row = overview.add(InfoRow("Swap"))
-        overview.add(muted_label(OVERVIEW_ABOUT))
+        overview.setToolTip(OVERVIEW_ABOUT)
 
         self.build_gpu_card()
         self.build_zram_card()
         self.build_zswap_card()
+        self.build_swapfile_card()
         self.finish_layout()
         self.render()
 
@@ -105,7 +107,7 @@ class MemoryPage(Page):
         self.vram_custom_button.clicked.connect(self.save_custom_vram)
         custom.addWidget(self.vram_custom_button)
         card.add_layout(custom)
-        card.add(muted_label(VRAM_ABOUT))
+        self.vram_row.setToolTip(VRAM_ABOUT)
 
         self.gtt_row = card.add(InfoRow("GTT Limit"))
         self.gtt_buttons = {}
@@ -116,40 +118,155 @@ class MemoryPage(Page):
             )
             self.gtt_buttons[gigabytes] = button
         card.add(ButtonGrid(columns=len(GTT_CHOICES))).set_buttons(self.gtt_buttons.values())
-        card.add(muted_label(GTT_ABOUT))
+        self.gtt_row.setToolTip(GTT_ABOUT)
 
     def build_zram_card(self):
         card = self.add(Card("zram"))
         self.zram_row = card.add(InfoRow("zram"))
-        self.zram_toggle = card.add(ToggleRow("Enable zram", ZRAM_ABOUT))
+        self.zram_toggle = card.add(ToggleRow("Enable zram", ZRAM_ABOUT, hint="Compressed swap in RAM."))
         self.zram_toggle.toggled.connect(lambda checked: self.save_zram(enabled=checked))
-        card.add(QLabel("Size"))
+        self.zram_options = card.add(QWidget())
+        options = QVBoxLayout(self.zram_options)
+        options.setContentsMargins(0, 0, 0, 0)
+        options.setSpacing(10)
+        options.addWidget(QLabel("Size"))
         self.zram_size_buttons = {}
-        for size, label, subtitle in ZRAM_SIZES:
-            button = ChoiceButton(label, subtitle)
+        for size, label, tooltip in ZRAM_SIZES:
+            button = ChoiceButton(label)
+            button.setToolTip(tooltip)
             button.clicked.connect(lambda _=False, s=size: self.save_zram(size=s))
             self.zram_size_buttons[size] = button
-        card.add(ButtonGrid(columns=len(ZRAM_SIZES))).set_buttons(self.zram_size_buttons.values())
-        card.add(QLabel("Compression"))
+        sizes = ButtonGrid(columns=len(ZRAM_SIZES))
+        sizes.set_buttons(self.zram_size_buttons.values())
+        options.addWidget(sizes)
+        options.addWidget(QLabel("Compression"))
         self.zram_algorithm_buttons = {}
         for algorithm, label, subtitle in ZRAM_ALGORITHMS:
             button = ChoiceButton(label, subtitle)
             button.clicked.connect(lambda _=False, a=algorithm: self.save_zram(algorithm=a))
             self.zram_algorithm_buttons[algorithm] = button
-        card.add(ButtonGrid(columns=len(ZRAM_ALGORITHMS))).set_buttons(
-            self.zram_algorithm_buttons.values()
-        )
+        algorithms = ButtonGrid(columns=len(ZRAM_ALGORITHMS))
+        algorithms.set_buttons(self.zram_algorithm_buttons.values())
+        options.addWidget(algorithms)
         self.zram_note = card.add(muted_label())
 
     def build_zswap_card(self):
-        card = self.add(Card("zswap"))
+        card = self.zswap_card = self.add(Card("zswap"))
         self.zswap_row = card.add(InfoRow("zswap"))
-        self.zswap_toggle = card.add(ToggleRow("Enable zswap", ZSWAP_ABOUT))
+        self.zswap_toggle = card.add(ToggleRow("Enable zswap", ZSWAP_ABOUT, hint="Compresses swap on a drive."))
         self.zswap_toggle.toggled.connect(self.save_zswap)
+
+    def on_console(self):
+        pro = self.is_pro()
+        self.vram_row.setToolTip(VRAM_ABOUT + (VRAM_ABOUT_PRO if pro else ""))
+
+    def build_swapfile_card(self):
+        self.swapfile = None
+        self.swapfile_saving = None
+        self.swapfile_size = 8
+        self.swappiness_touched = False
+        card = self.add(Card("Swap File"))
+        self.swapfile_row = card.add(InfoRow("Swap File"))
+        self.swapfile_size_buttons = {}
+        for gigabytes in (4, 8, 16):
+            button = ChoiceButton(f"{gigabytes} GB")
+            button.clicked.connect(lambda _=False, g=gigabytes: self._pick_swapfile_size(g))
+            self.swapfile_size_buttons[gigabytes] = button
+        self.swapfile_sizes = card.add(ButtonGrid(columns=3))
+        self.swapfile_sizes.set_buttons(self.swapfile_size_buttons.values())
+        self.swapfile_row.setToolTip(SWAPFILE_ABOUT)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.swapfile_button = QPushButton("Create")
+        self.swapfile_button.clicked.connect(self.toggle_swapfile)
+        buttons.addWidget(self.swapfile_button)
+        card.add_layout(buttons)
+        self.swappiness_slider = card.add(SliderRow("Swappiness", SWAPPINESS_ABOUT, hint="Lower keeps more in RAM."))
+        self.swappiness_slider.set_range(0, 200, value=SWAPPINESS_DEFAULT, reset_value=SWAPPINESS_DEFAULT)
+        self.swappiness_slider.changed.connect(self._swappiness_moved)
+        save_row = QHBoxLayout()
+        save_row.addStretch(1)
+        self.swappiness_button = QPushButton("Save")
+        self.swappiness_button.clicked.connect(self.save_swappiness)
+        save_row.addWidget(self.swappiness_button)
+        card.add_layout(save_row)
+        self.render_swapfile()
+
+    def _pick_swapfile_size(self, gigabytes):
+        self.swapfile_size = gigabytes
+        self.render_swapfile()
+
+    def _swappiness_moved(self, _value):
+        self.swappiness_touched = True
+        self.render_swapfile()
+
+    def _swapfile_loaded(self, result):
+        if result["success"]:
+            self.swapfile = result["data"]
+            if not self.swappiness_touched and self.swapfile["swappiness"] is not None:
+                self.swappiness_slider.set_value(self.swapfile["swappiness"])
+        self.render_swapfile()
+
+    def _swapfile_done(self, result):
+        self.notify(result)
+        self.swapfile_saving = None
+        if result["success"]:
+            self.swappiness_touched = False
+        self._swapfile_loaded(result)
+        self.refresh_status()
+
+    def toggle_swapfile(self):
+        if self.swapfile is None:
+            return
+        if self.swapfile["exists"]:
+            self.swapfile_saving = "remove"
+            self.call("remove_swap_file", callback=self._swapfile_done)
+        else:
+            self.swapfile_saving = "create"
+            self.call("create_swap_file", self.swapfile_size, callback=self._swapfile_done)
+        self.render_swapfile()
+
+    def save_swappiness(self):
+        self.swapfile_saving = "swappiness"
+        self.render_swapfile()
+        self.call("set_swappiness", self.swappiness_slider.value(), callback=self._swapfile_done)
+
+    def render_swapfile(self):
+        state = self.swapfile
+        busy = self.swapfile_saving is not None
+        exists = bool(state and state["exists"])
+        if state is None:
+            self.swapfile_row.set("…")
+        elif exists:
+            status = "on" if state["active"] else "off"
+            note = None if state["permanent"] else "Not in /etc/fstab, so it won't come back after a reboot."
+            self.swapfile_row.set(f"{format_bytes(state['size'])}, {status}", note)
+            self.swapfile_row.setToolTip(SWAPFILE_ABOUT)
+        else:
+            self.swapfile_row.set("None")
+            self.swapfile_row.setToolTip(f"{SWAPFILE_ABOUT}\n{format_usage(state['free'])} free on the drive.")
+        self.swapfile_sizes.setVisible(not exists)
+        for gigabytes, button in self.swapfile_size_buttons.items():
+            fits = state is not None and state["free"] > (gigabytes + 1) * GIB
+            button.setEnabled(fits and not busy)
+            button.set_selected(gigabytes == self.swapfile_size)
+        labels = {"create": "Creating…", "remove": "Removing…"}
+        self.swapfile_button.setText(labels.get(self.swapfile_saving, "Remove" if exists else "Create"))
+        self.swapfile_button.setObjectName("cancelBtn" if exists else "")
+        restyle(self.swapfile_button)
+        self.swapfile_button.setEnabled(state is not None and not busy)
+        has_swappiness = bool(state and state["swappiness"] is not None)
+        self.swappiness_slider.setEnabled(has_swappiness and not busy)
+        self.swappiness_button.setEnabled(
+            has_swappiness and not busy and self.swappiness_slider.value() != state["swappiness"]
+        )
+        self.swappiness_button.setText("Saving…" if self.swapfile_saving == "swappiness" else "Save")
 
     def on_activate(self):
         self.memory_saving = None
         self.swap_saving = None
+        self.swapfile_saving = None
+        self.call("get_swap_file", callback=self._swapfile_loaded)
         self.refresh_status(callback=lambda r: self.notify(r, quiet=True))
         self.call("get_gpu_memory", callback=self._memory_loaded)
         self.call("get_swap_settings", callback=self._swap_loaded)
@@ -265,10 +382,8 @@ class MemoryPage(Page):
         else:
             total, available = status["ram_total"], status["ram_available"]
             if total and available is not None:
-                self.ram_row.set(
-                    f"{format_usage(total - available)} of {format_usage(total)}",
-                    f"{format_usage(available)} available",
-                )
+                self.ram_row.set(f"{format_usage(total - available)} of {format_usage(total)}")
+                self.ram_row.setToolTip(f"{format_usage(available)} available")
             else:
                 self.ram_row.set("Unknown")
             self._render_swap_row(status)
@@ -277,7 +392,7 @@ class MemoryPage(Page):
     def _render_swap_row(self, status):
         swaps = status["swaps"]
         if not swaps:
-            self.swap_row.set("None", "No swap is active.")
+            self.swap_row.set("None")
             return
         total = status["swap_total"] or sum(swap["size"] for swap in swaps)
         free = status["swap_free"]
@@ -289,7 +404,8 @@ class MemoryPage(Page):
                 f"{swap['name']} ({kind}): {format_usage(swap['used'])} of "
                 f"{format_usage(swap['size'])}"
             )
-        self.swap_row.set(f"{format_usage(used)} of {format_usage(total)}", "\n".join(devices))
+        self.swap_row.set(f"{format_usage(used)} of {format_usage(total)}")
+        self.swap_row.setToolTip("\n".join(devices))
 
     def render_memory(self):
         memory = self.memory
@@ -331,7 +447,7 @@ class MemoryPage(Page):
             self.vram_row.set(
                 value,
                 f"vram.txt asks for {format_bytes(configured)}, which can cause a black screen. "
-                "It's read as hex, so it was probably written in decimal. Pick a size below.",
+                "It's read as hex, so it was probably written in decimal: pick a size below",
                 error=True,
             )
         elif running is not None and abs(running - configured) > configured / 16:
@@ -374,6 +490,7 @@ class MemoryPage(Page):
         self.zram_toggle.set_checked(zram_saving[1] if zram_saving else configured)
         self.zram_toggle.setEnabled(swap is not None and saving is None)
         options = configured and saving is None
+        self.zram_options.setVisible(configured)
         for size, button in self.zram_size_buttons.items():
             button.setEnabled(options)
             button.set_selected(configured and swap["zram_size"] == size)
@@ -386,28 +503,24 @@ class MemoryPage(Page):
         notes = []
         if swap is not None:
             if swap["zram_error"]:
-                notes.append(swap["zram_error"])
+                notes.append(short_text(swap["zram_error"]))
             elif not swap["zram_generator"]:
-                notes.append(
-                    "zram-generator isn't installed. Install it with your package manager to "
-                    "turn zram on here."
-                )
+                notes.append("Install zram-generator with your package manager to turn zram on here")
             if configured and swap["zram_size"] not in self.zram_size_buttons:
-                notes.append(f"Configured size: {swap['zram_size'] or 'zram-generator default'}.")
+                notes.append(f"Configured size: {swap['zram_size'] or 'zram-generator default'}")
             if swap["zram_source"] and swap["zram_source"].startswith(("/usr", "/lib")):
-                notes.append(f"Using your distro's default from {swap['zram_source']}.")
-        self.zram_note.setText(" ".join(notes))
+                notes.append(f"Using your distro's default from {swap['zram_source']}")
+        self.zram_note.setText("\n".join(notes))
         self.zram_note.setVisible(bool(notes))
 
     def _render_zswap(self):
         status = self.status
         swap = self.swap
         zswap = status["zswap"] if status else None
+        self.zswap_card.setVisible(status is None or zswap is not None)
         if status is None:
             self.zswap_row.set("…")
-        elif zswap is None:
-            self.zswap_row.set("Unavailable", "This kernel doesn't include zswap.")
-        else:
+        elif zswap is not None:
             parts = []
             if zswap["compressor"]:
                 parts.append(zswap["compressor"])

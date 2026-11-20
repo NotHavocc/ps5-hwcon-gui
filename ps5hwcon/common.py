@@ -1,6 +1,3 @@
-from functools import reduce
-from math import gcd
-
 APP_TITLE = "PS5 Hardware Control"
 
 FAN_MIN = 40
@@ -64,13 +61,13 @@ FAN_CURVE_PRESETS = [
         "balanced",
         "Balanced",
         "100% at 85 °C",
-        _curve(40, [(45, 15), (55, 25), (60, 35), (65, 45), (70, 60), (75, 75), (80, 90), (85, 100)]),
+        _curve(45, [(50, 15), (55, 20), (60, 25), (65, 35), (70, 50), (75, 65), (80, 85), (85, 100)]),
     ),
     (
         "cool",
         "Cool",
         "100% at 80 °C",
-        _curve(35, [(40, 20), (50, 30), (55, 40), (60, 50), (65, 65), (70, 80), (75, 90), (80, 100)]),
+        _curve(40, [(45, 15), (50, 25), (55, 30), (60, 40), (65, 55), (70, 70), (75, 85), (80, 100)]),
     ),
 ]
 
@@ -139,9 +136,3 @@ def nearest(value, choices):
     if not choices:
         return value
     return min(choices, key=lambda choice: (abs(choice - value), choice))
-
-
-def slider_step(steps, fallback):
-    if len(steps) < 2:
-        return fallback
-    return reduce(gcd, (b - a for a, b in zip(steps, steps[1:])), 0) or fallback

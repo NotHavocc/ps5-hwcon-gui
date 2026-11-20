@@ -6,7 +6,6 @@ from ..common import (
     FAN_CURVE_PRESETS,
     FAN_DEFAULT,
     FAN_MAX,
-    FAN_MAX_COOLING,
     FAN_MIN,
     FAN_MODE_CURVE,
     FAN_MODE_FIRMWARE,
@@ -65,6 +64,34 @@ class TempTile(QWidget):
             restyle(self.value)
 
 
+class TempTiles(QWidget):
+    """A grid with a TempTile per sensor, amber near the Overheat Threshold and red at it."""
+
+    def __init__(self):
+        super().__init__()
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(24)
+        self.grid.setVerticalSpacing(6)
+        self.tiles = {}
+
+    def set_sensors(self, sensors, threshold):
+        ids = [sensor["id"] for sensor in sensors]
+        if ids != list(self.tiles):
+            for tile in self.tiles.values():
+                self.grid.removeWidget(tile)
+                tile.deleteLater()
+            self.tiles = {}
+            for index, sensor in enumerate(sensors):
+                tile = TempTile(sensor["label"])
+                self.grid.addWidget(tile, *divmod(index, TILE_COLUMNS))
+                self.tiles[sensor["id"]] = tile
+        for sensor in sensors:
+            celsius = sensor["celsius"]
+            level = "hot" if celsius >= threshold else "warm" if celsius >= threshold - GUARD_HYSTERESIS else ""
+            self.tiles[sensor["id"]].set(format_temp(celsius), level)
+
+
 class FanPage(Page):
     title = "Fan"
     poll_method = "get_fan_status"
@@ -89,12 +116,14 @@ class FanPage(Page):
         )
 
         temps = self.add(Card("Temperatures"))
-        self.tiles_grid = QGridLayout()
-        self.tiles_grid.setHorizontalSpacing(24)
-        self.tiles_grid.setVerticalSpacing(6)
-        temps.add_layout(self.tiles_grid)
-        self.tiles = {}
+        self.tiles = temps.add(TempTiles())
         self.sensors_placeholder = temps.add(muted_label("Reading sensors…"))
+        self.pro_gpu_note = temps.add(
+            muted_label(
+                "No GPU sensor found, check that cmdline.txt doesn't have amdgpu.ps5_smu=0"
+            )
+        )
+        self.pro_gpu_note.hide()
         self.target_row = temps.add(InfoRow("Fan Target"))
         self.mode_row = temps.add(InfoRow("Fan Mode"))
         self.speed_row = temps.add(InfoRow("Fan Speed"))
@@ -104,8 +133,8 @@ class FanPage(Page):
 
         control = self.add(Card("Fan Control"))
         self.view_buttons = {
-            VIEW_TARGET: ChoiceButton("Target Temperature", "Holds the SoC near a temperature"),
-            VIEW_CURVE: ChoiceButton("Fan Curve", "Fan speed per temperature"),
+            VIEW_TARGET: ChoiceButton("Target Temperature"),
+            VIEW_CURVE: ChoiceButton("Fan Curve"),
         }
         for view, button in self.view_buttons.items():
             button.clicked.connect(lambda _=False, v=view: self._select_view(v))
@@ -128,13 +157,6 @@ class FanPage(Page):
         self._add_firmware_row(self.curve_presets_card)
 
         self.curve_card = self.add(Card("Fan Curve"))
-        self.curve_card.add(
-            muted_label(
-                "Drag the points to set the fan speed for each SoC temperature. The diamond is "
-                "where the fan stops; between it and the first point the fan keeps its last "
-                "state. Above 90 °C the kernel always takes over."
-            )
-        )
         self.curve_editor = self.curve_card.add(CurveEditor())
         self.curve_editor.changed.connect(self._curve_edited)
         curve_buttons = QHBoxLayout()
@@ -169,6 +191,7 @@ class FanPage(Page):
                 "Target Temperature",
                 "Lower targets ramp the fan earlier and louder.",
                 suffix=" °C",
+                hint="Lower is cooler and louder.",
             )
         )
         self.target_slider.set_range(FAN_MIN, FAN_MAX, value=FAN_DEFAULT, reset_value=FAN_DEFAULT)
@@ -184,23 +207,24 @@ class FanPage(Page):
         manual.add_layout(apply_row)
 
         advanced = self.add(Card("Protection && Startup"))
-        self.restore_toggle = advanced.add(ToggleRow("Restore on Startup"))
+        self.restore_toggle = advanced.add(ToggleRow("Restore on Startup", hint="Re-applies your fan setting at boot."))
         self.restore_toggle.toggled.connect(lambda c: self.save_settings(restore_on_boot=c))
-        self.guard_toggle = advanced.add(ToggleRow("Thermal Guard"))
+        self.guard_toggle = advanced.add(ToggleRow("Thermal Guard", hint="Full speed if the CPU overheats."))
         self.guard_toggle.toggled.connect(lambda c: self.save_settings(guard_enabled=c))
         self.alarm_toggle = advanced.add(
             ToggleRow(
                 "Overheat Alarm",
-                "Play the console's error beep when the CPU reaches the threshold. "
-                f"It re-arms once the CPU is {GUARD_HYSTERESIS} °C cooler.",
+                "Beeps when the CPU reaches the threshold.",
+                hint="Beeps if the CPU overheats.",
             )
         )
         self.alarm_toggle.toggled.connect(lambda c: self.save_settings(alarm_enabled=c))
         self.threshold_slider = advanced.add(
             SliderRow(
                 "Overheat Threshold",
-                "CPU temperature used by Thermal Guard and Overheat Alarm.",
+                "CPU temperature for Thermal Guard and the alarm.",
                 suffix=" °C",
+                hint="When the guard and alarm kick in.",
             )
         )
         self.threshold_slider.set_range(
@@ -208,11 +232,7 @@ class FanPage(Page):
         )
         self.threshold_slider.changed.connect(self._threshold_moved)
         self.protection_row = advanced.add(InfoRow("Protection Status"))
-        background = muted_label(
-            "Thermal Guard and Overheat Alarm keep running while the window is closed to the "
-            "tray, and stop when you quit."
-        )
-        advanced.add(background)
+        self.protection_row.setToolTip("Thermal Guard and the alarm keep running in the tray and stop when you quit.")
 
         self.finish_layout()
         self.render()
@@ -221,8 +241,10 @@ class FanPage(Page):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(muted_label("Hands the fan back to the console's own fan table."), 1)
+        layout.addStretch(1)
         button = QPushButton("Return to Console Firmware")
+        button.setObjectName("cancelBtn")
+        button.setToolTip("Hands the fan back to the console's own fan table.")
         button.clicked.connect(lambda: self.apply_mode(FIRMWARE_ID, FAN_MODE_FIRMWARE))
         layout.addWidget(button)
         card.add(row)
@@ -278,6 +300,7 @@ class FanPage(Page):
             self.applying = None
             self.render()
             self.refresh_status()
+            self.reload_saved()
 
         self.call("set_fan_target", temp, callback=done)
 
@@ -293,6 +316,18 @@ class FanPage(Page):
         self.applying = None
         self.render()
         self.refresh_status()
+        self.reload_saved()
+
+    def reload_saved(self):
+        """Picks up the mode, target and curve the backend saved, for Restore on Startup's text."""
+
+        def loaded(result):
+            if result["success"] and self.settings is not None:
+                for key in ("saved_target", "saved_curve", "saved_fan_mode"):
+                    self.settings[key] = result["data"]["settings"][key]
+                self.render()
+
+        self.call("get_fan_settings", callback=loaded)
 
     def apply_curve(self, source, curve):
         self.applying = source
@@ -360,21 +395,8 @@ class FanPage(Page):
             self.save_settings(guard_threshold=self.threshold)
         super().deactivate()
 
-    def _render_sensors(self, sensors, threshold):
-        ids = [sensor["id"] for sensor in sensors]
-        if ids != list(self.tiles):
-            for tile in self.tiles.values():
-                self.tiles_grid.removeWidget(tile)
-                tile.deleteLater()
-            self.tiles = {}
-            for index, sensor in enumerate(sensors):
-                tile = TempTile(sensor["label"])
-                self.tiles_grid.addWidget(tile, *divmod(index, TILE_COLUMNS))
-                self.tiles[sensor["id"]] = tile
-        for sensor in sensors:
-            celsius = sensor["celsius"]
-            level = "hot" if celsius >= threshold else "warm" if celsius >= threshold - GUARD_HYSTERESIS else ""
-            self.tiles[sensor["id"]].set(format_temp(celsius), level)
+    def on_console(self):
+        self.render()
 
     def render(self):
         status = self.status
@@ -388,7 +410,12 @@ class FanPage(Page):
         protection_enabled = guard_enabled or alarm_enabled
 
         sensors = status["sensors"] if status else []
-        self._render_sensors(sensors, self.threshold)
+        if self.is_pro():
+            sensors = sorted(sensors, key=lambda s: s["chip"] not in ("k10temp", "amdgpu"))
+        self.tiles.set_sensors(sensors, self.threshold)
+        self.pro_gpu_note.setVisible(
+            self.is_pro() and bool(sensors) and not any(s["chip"] == "amdgpu" for s in sensors)
+        )
         self.sensors_placeholder.setText(
             "Reading sensors…" if loading else "No temperature sensors found"
         )
@@ -406,15 +433,7 @@ class FanPage(Page):
         for view_id, button in self.view_buttons.items():
             button.set_selected(view_id == view)
             button.setEnabled(not busy and (curve_mode or view_id == VIEW_TARGET))
-        if not curve_mode and not loading:
-            note = "Fan curves need a kernel with the ps5_fan hwmon driver."
-        elif curve_mode and target_view:
-            note = (
-                "This kernel controls the fan by curve, so the target is applied as a curve that "
-                "ramps up to full speed just above it. Editing the curve replaces the target."
-            )
-        else:
-            note = ""
+        note = "Fan curves need a kernel with the ps5_fan hwmon driver" if not curve_mode and not loading else ""
         self.view_note.setText(note)
         self.view_note.setVisible(bool(note))
 
@@ -465,29 +484,25 @@ class FanPage(Page):
 
         if curve_mode:
             saved_curve = settings["saved_curve"] if settings else None
-            what = (
-                "Re-applies your saved target or fan curve"
-                if saved_curve
-                else "Re-applies the last target or curve you apply"
-            )
-            self.restore_toggle.set_description(
-                f"{what} when the app starts. "
-                "The kernel resets the curve to its quiet default at boot."
-            )
+            saved_mode = settings["saved_fan_mode"] if settings else None
+            if saved_mode == FAN_MODE_FIRMWARE:
+                what = "Hands the fan back to the console's own control"
+            elif saved_mode == FAN_MODE_FULL:
+                what = "Runs the fan at full speed"
+            elif saved_curve or saved_mode == FAN_MODE_CURVE:
+                what = "Re-applies your fan curve"
+            else:
+                what = "Re-applies the last fan setting you choose"
+            self.restore_toggle.set_description(f"{what} once per boot, when the app first starts.")
             self.guard_toggle.set_description(
-                "Run the fan at full speed when the CPU reaches the threshold, then go back to "
-                f"the previous mode once it is {GUARD_HYSTERESIS} °C cooler."
+                f"Full speed at the threshold, back to normal once {GUARD_HYSTERESIS} °C cooler."
             )
         else:
             saved = settings["saved_target"] if settings else None
             what = f"Re-applies {saved} °C" if saved is not None else "Re-applies your last target"
-            self.restore_toggle.set_description(
-                f"{what} when the app starts. "
-                f"The kernel resets the target to {FAN_BOOT_TARGET} °C at boot."
-            )
+            self.restore_toggle.set_description(f"{what} once per boot, when the app first starts.")
             self.guard_toggle.set_description(
-                f"Switch to Max Cooling ({FAN_MAX_COOLING} °C) when the CPU reaches the "
-                f"threshold, then restore your target once it is {GUARD_HYSTERESIS} °C cooler."
+                f"Max Cooling at the threshold, back to your target once {GUARD_HYSTERESIS} °C cooler."
             )
         toggles_enabled = settings is not None and not self.saving_settings
         for toggle, key in (

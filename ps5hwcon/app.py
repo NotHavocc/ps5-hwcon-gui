@@ -1,18 +1,22 @@
 import os
+import re
 import subprocess
 import sys
 
-from PyQt6.QtCore import QSettings, QSize, Qt, QUrl
-from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
+from PyQt6.QtCore import QSettings, QSize, Qt, QTimer, QUrl
+from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -22,19 +26,29 @@ from .bridge import BackendBridge
 from . import __version__
 from .common import APP_TITLE
 from .pages.cpu import CpuPage
+from .pages.dashboard import DashboardPage
+from .pages.display import DisplayPage
 from .pages.fan import FanPage
 from .pages.gpu import GpuPage
+from .pages.group import PageGroup
 from .pages.led import LedPage
 from .pages.memory import MemoryPage
+from .pages.performance import PerformancePage
+from .telemetry import Telemetry
 from .tray import ICON_PATH, TRAY_WAIT_MS, create_tray
-from .widgets import ACCENT, Toast, ToggleRow
+from .updates import CHECK_INTERVAL_MS, UpdateChecker
+from .widgets import ACCENT, ButtonGrid, ChoiceButton, Toast, ToggleRow, restyle
 
 ACCENT_HOVER = "#005a9e"
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECK_MARK = os.path.join(PACKAGE_DIR, "check.svg")
-AUTOSTART_ABOUT = (
-    "Opens the app hidden in the system tray when you log in, so Restore on Startup, "
-    "Thermal Guard and LED loops run without opening the window."
+AUTOSTART_ABOUT = "Runs Thermal Guard and LED loops in the background."
+AUTO_UPDATES_ABOUT = "Checks GitHub at startup and once a day."
+WARM_REBOOT_WARNING = (
+    "Restart Linux without going through the PS5 OS and the loader?\n\n"
+    "Other apps close without saving. cmdline.txt changes apply, but a VRAM change needs a full "
+    "start with the loader. The warm reboot is experimental: if the console doesn't come back, "
+    "power it off and start Linux the usual way."
 )
 URL_OPENERS = (("xdg-open",), ("gio", "open"))
 KDE_OPENERS = (("kde-open",), ("kde-open5",))
@@ -94,6 +108,18 @@ QListWidget#nav::item:selected {{
 }}
 QListWidget#nav::item:hover:!selected {{
     background-color: #3d3d3d;
+}}
+QWidget#navPanel {{
+    background-color: #1e1e1e;
+}}
+QLabel#consoleBadge {{
+    color: #aaaaaa;
+    padding: 10px 12px;
+    font-size: 12px;
+}}
+QLabel#consoleBadge[pro="true"] {{
+    color: {ACCENT};
+    font-weight: bold;
 }}
 QGroupBox {{
     background-color: #333333;
@@ -275,6 +301,21 @@ QLineEdit:focus {{
 #toast[critical="true"] {{
     border-left-color: #ff6b5f;
 }}
+QTextBrowser {{
+    background-color: #333333;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    padding: 6px;
+}}
+QProgressBar#load {{
+    background-color: #444444;
+    border: none;
+    border-radius: 3px;
+}}
+QProgressBar#load::chunk {{
+    background-color: {ACCENT};
+    border-radius: 3px;
+}}
 QScrollBar:vertical {{
     background: #2b2b2b;
     width: 10px;
@@ -327,16 +368,72 @@ def open_url(url):
     QDesktopServices.openUrl(QUrl(url))
 
 
-class AboutPage(QWidget):
-    LINKS = (
-        ("My Website", "https://nothavoc.is-a.dev"),
-        ("Check For Updates", "https://github.com/NotHavocc/ps5-hwcon-gui/releases/latest"),
-    )
+CONSOLE_CHOICES = (("auto", "Auto"), ("pro", "PS5 Pro"), ("base", "PS5 / Slim"))
+CONSOLE_NAMES = {"pro": "PS5 Pro", "base": "PS5 or PS5 Slim"}
 
-    def __init__(self, bridge, notify):
+
+def console_summary(console):
+    if console is None:
+        return "Detecting the console model…"
+    detected = console["detected"]
+    if detected is None:
+        found = "The console model couldn't be detected (no AMD GPU in sysfs)"
+    else:
+        found = f"Detected {CONSOLE_NAMES[detected]} from the {console['source']}"
+    if console["override"] != "auto":
+        found += f", overridden to {CONSOLE_NAMES[console['override']]}"
+    return found
+
+
+class UpdateDialog(QDialog):
+    def __init__(self, release, parent=None):
+        super().__init__(parent)
+        newer = release["newer"]
+        self.setWindowTitle("Update Available" if newer else "Latest Release")
+        self.resize(540, 440)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        if newer:
+            heading = f"{release['name']} is available (you have {__version__})"
+        else:
+            heading = f"The latest release is {release['name']} (you have {__version__})"
+        title = QLabel(heading)
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        layout.addWidget(title)
+        changelog = QTextBrowser()
+        changelog.setOpenLinks(False)
+        changelog.anchorClicked.connect(lambda url: open_url(url.toString()))
+        text = re.sub(r"(?<![<(])(https?://\S+)", r"<\1>", release["changelog"])
+        changelog.setMarkdown(text or "No changelog was published for this release.")
+        layout.addWidget(changelog, 1)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_button = QPushButton("Close")
+        close_button.setObjectName("cancelBtn")
+        close_button.clicked.connect(self.reject)
+        open_button = QPushButton("Open Release Page")
+        open_button.clicked.connect(lambda: (open_url(release["url"]), self.accept()))
+        open_button.setDefault(True)
+        buttons.addWidget(close_button)
+        buttons.addWidget(open_button)
+        layout.addLayout(buttons)
+
+
+class AboutPage(QWidget):
+    LINKS = (("My Website", "https://nothavoc.is-a.dev"),)
+
+    def __init__(self, bridge, notify, on_console, updates, settings):
         super().__init__()
         self.bridge = bridge
         self.notify = notify
+        self.on_console = on_console
+        self.updates = updates
+        self.settings = settings
+        self.release = None
+        self.console = None
+        self.console_saving = None
         self.autostart = None
         self.saving_autostart = False
         layout = QVBoxLayout(self)
@@ -344,46 +441,132 @@ class AboutPage(QWidget):
         icon = QLabel()
         icon.setPixmap(
             QPixmap(ICON_PATH).scaled(
-                112, 112, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
         )
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("margin-bottom: 15px;")
         layout.addWidget(icon)
         title = QLabel(APP_TITLE)
-        title.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {ACCENT}; margin-bottom: 5px;")
+        title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {ACCENT}; margin-top: 8px;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        version = QLabel(f"Version {__version__}")
-        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version.setStyleSheet("color: #aaaaaa;")
-        layout.addWidget(version)
-        desc = QLabel(
-            "Fan curve or target, temperatures, CPU and GPU governors and clocks, GPU memory "
-            "and swap, and indicator LED presets for PS5 Linux."
-        )
-        desc.setWordWrap(True)
+        self.version = QLabel(f"Version {__version__}")
+        self.version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.version.setStyleSheet("color: #aaaaaa;")
+        layout.addWidget(self.version)
+        desc = QLabel("Fan, CPU, GPU, memory and LED control for PS5 Linux")
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setStyleSheet("color: #cccccc; margin-top: 20px; font-size: 14px;")
+        desc.setStyleSheet("color: #cccccc; margin-top: 10px;")
         layout.addWidget(desc)
-        self.environment = QLabel()
-        self.environment.setWordWrap(True)
-        self.environment.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.environment.setStyleSheet("color: #aaaaaa; margin-top: 12px;")
-        layout.addWidget(self.environment)
+        actions = QHBoxLayout()
+        actions.setSpacing(16)
+        actions.addStretch(1)
+        self.update_button = QPushButton("Check for Updates")
+        self.update_button.setObjectName("small")
+        self.update_button.clicked.connect(self.check_updates)
+        actions.addWidget(self.update_button)
         for text, url in self.LINKS:
             link = QLabel(f'<a href="{url}" style="color: {ACCENT}; text-decoration: none;">{text}</a>')
             link.setTextFormat(Qt.TextFormat.RichText)
             link.linkActivated.connect(open_url)
-            link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            link.setStyleSheet("margin-top: 8px; font-size: 14px;")
-            layout.addWidget(link)
-        self.autostart_toggle = ToggleRow("Start in Tray at Login", AUTOSTART_ABOUT)
+            actions.addWidget(link)
+        actions.addStretch(1)
+        layout.addSpacing(10)
+        layout.addLayout(actions)
+        model_title = QLabel("Console Model")
+        model_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        model_title.setStyleSheet("margin-top: 16px; font-weight: bold;")
+        layout.addWidget(model_title)
+        self.console_buttons = {}
+        for model, label in CONSOLE_CHOICES:
+            button = ChoiceButton(label)
+            button.clicked.connect(lambda _=False, m=model: self.save_console(m))
+            self.console_buttons[model] = button
+        grid = ButtonGrid(columns=len(CONSOLE_CHOICES))
+        grid.set_buttons(self.console_buttons.values())
+        grid.setFixedWidth(420)
+        layout.addWidget(grid, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.console_note = QLabel()
+        self.console_note.setObjectName("muted")
+        self.console_note.setWordWrap(True)
+        self.console_note.setFixedWidth(420)
+        self.console_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.console_note, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.render_console()
+        self.autostart_toggle = ToggleRow("Start in Tray at Login", AUTOSTART_ABOUT, hint="Opens hidden in the tray at login.")
         self.autostart_toggle.setFixedWidth(420)
-        self.autostart_toggle.setContentsMargins(0, 20, 0, 0)
+        self.autostart_toggle.setContentsMargins(0, 16, 0, 0)
         self.autostart_toggle.toggled.connect(self.save_autostart)
         self.autostart_toggle.hide()
         layout.addWidget(self.autostart_toggle, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.auto_update_toggle = ToggleRow(
+            "Check for Updates Automatically", AUTO_UPDATES_ABOUT, hint="Checks GitHub once a day."
+        )
+        self.auto_update_toggle.setFixedWidth(420)
+        self.auto_update_toggle.setContentsMargins(0, 8, 0, 0)
+        self.auto_update_toggle.set_checked(self.auto_updates_enabled())
+        self.auto_update_toggle.toggled.connect(lambda checked: self.settings.setValue("check_updates", checked))
+        layout.addWidget(self.auto_update_toggle, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    def auto_updates_enabled(self):
+        return self.settings.value("check_updates", True, type=bool)
+
+    def check_updates(self):
+        if self.release is not None and self.release["newer"]:
+            self.show_release()
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking…")
+        self.updates.check(manual=True)
+
+    def show_release(self):
+        UpdateDialog(self.release, self.window()).exec()
+
+    def set_release(self, result, manual):
+        self.update_button.setEnabled(True)
+        if not result["success"]:
+            self.update_button.setText("Check for Updates")
+            if manual:
+                self.notify(result)
+            return
+        self.release = result["data"]
+        name = self.release["name"]
+        newer = self.release["newer"]
+        self.update_button.setText(f"View {name} Changelog" if newer else "Check for Updates")
+        if not manual:
+            return
+        if newer is False:
+            self.notify({"success": True, "message": f"You're on the latest version ({__version__})."})
+        else:
+            self.show_release()
+
+    def set_console(self, console):
+        self.console = console
+        self.render_console()
+
+    def save_console(self, model):
+        if self.console is None or model == self.console["override"]:
+            return
+        self.console_saving = model
+        self.render_console()
+
+        def done(result):
+            self.notify(result)
+            self.console_saving = None
+            if result["success"]:
+                self.on_console(result["data"])
+            else:
+                self.render_console()
+
+        self.bridge.call("set_console_model", model, callback=done)
+
+    def render_console(self):
+        console = self.console
+        for model, button in self.console_buttons.items():
+            button.setEnabled(console is not None and self.console_saving is None)
+            button.set_selected(console is not None and console["override"] == model)
+            button.set_busy(self.console_saving == model)
+        self.console_note.setText(console_summary(console))
 
     def load_autostart(self):
         self.bridge.call("get_autostart", callback=self._autostart_loaded)
@@ -413,30 +596,29 @@ class AboutPage(QWidget):
         self.autostart_toggle.setEnabled(
             (state["available"] or state["enabled"]) and not self.saving_autostart
         )
-        description = AUTOSTART_ABOUT
         if not state["available"]:
-            description = state["reason"]
+            self.autostart_toggle.set_note(state["reason"])
         elif not state["passwordless"]:
-            description += " Without --passwordless it asks for your password at each login."
-        self.autostart_toggle.set_description(description)
+            self.autostart_toggle.set_note("Asks for your password at login (no --passwordless).")
+        else:
+            self.autostart_toggle.set_note(None)
 
     def set_environment(self, data):
-        self.environment.setText(
-            f"Running as {'root' if data['root'] else 'a normal user'} - "
-            f"settings in {data['settings_path']}"
+        self.version.setToolTip(
+            f"Running as {'root' if data['root'] else 'a normal user'}. "
+            f"Settings in {data['settings_path']}"
         )
 
 
 class MainWindow(QMainWindow):
     PAGES = (
+        ("Dashboard", (("Now", DashboardPage), ("History", PerformancePage))),
         ("Fan", FanPage),
-        ("CPU", CpuPage),
-        ("GPU", GpuPage),
+        ("CPU & GPU", (("CPU", CpuPage), ("GPU", GpuPage))),
         ("Memory", MemoryPage),
+        ("Display", DisplayPage),
         ("LED", LedPage),
     )
-    ABOUT_ROW = 0
-    DEFAULT_ROW = 1
 
     def __init__(self, bridge, tray=None, start_hidden=False):
         super().__init__()
@@ -470,11 +652,22 @@ class MainWindow(QMainWindow):
         main.setSpacing(0)
         outer.addLayout(main, 1)
 
+        nav_panel = QWidget()
+        nav_panel.setObjectName("navPanel")
+        nav_panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        nav_panel.setFixedWidth(160)
+        nav_layout = QVBoxLayout(nav_panel)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(0)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(160)
         self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        main.addWidget(self.nav)
+        nav_layout.addWidget(self.nav, 1)
+        self.console_badge = QLabel()
+        self.console_badge.setObjectName("consoleBadge")
+        self.console_badge.setWordWrap(True)
+        nav_layout.addWidget(self.console_badge)
+        main.addWidget(nav_panel)
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -484,6 +677,12 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(20, 10, 20, 16)
         buttons.setSpacing(10)
+        self.warm_reboot_button = QPushButton("Warm Reboot")
+        self.warm_reboot_button.setObjectName("cancelBtn")
+        self.warm_reboot_button.setToolTip("Restarts Linux without the PS5 OS or the loader.")
+        self.warm_reboot_button.clicked.connect(self.warm_reboot)
+        self.warm_reboot_button.hide()
+        buttons.addWidget(self.warm_reboot_button)
         buttons.addStretch(1)
         hide_button = QPushButton("Hide to Tray")
         hide_button.setObjectName("cancelBtn")
@@ -497,27 +696,44 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.toast = Toast(root, above=self.banner)
-        self.about = AboutPage(bridge, self.notify)
-        self.stack.addWidget(self.about)
-        QListWidgetItem("About", self.nav)
+        self.updates = UpdateChecker(self)
+        self.updates.finished.connect(self._updates_checked)
+        self.about = AboutPage(bridge, self.notify, self._console_loaded, self.updates, self.settings)
+        self.telemetry = Telemetry(bridge, self)
         self.pages = []
-        for label, page_class in self.PAGES:
-            page = page_class(bridge, self.notify)
+        for label, spec in self.PAGES:
+            if isinstance(spec, tuple):
+                page = PageGroup(label, [(name, self._make_page(cls)) for name, cls in spec])
+            else:
+                page = self._make_page(spec)
             self.pages.append(page)
             self.stack.addWidget(page)
             QListWidgetItem(label, self.nav)
+        self.stack.addWidget(self.about)
+        QListWidgetItem("About", self.nav)
         self.nav.currentRowChanged.connect(self._select_page)
-        last = self.settings.value("last_tab", self.DEFAULT_ROW, type=int)
-        self.nav.setCurrentRow(last if 0 <= last < self.nav.count() else self.DEFAULT_ROW)
+        last = self.settings.value("last_page", "", type=str)
+        labels = [self.nav.item(row).text() for row in range(self.nav.count())]
+        self.nav.setCurrentRow(labels.index(last) if last in labels else 0)
 
         self._setup_tray(tray)
         hide_button.setVisible(self.tray is not None)
         self.bridge.ready.connect(self._backend_ready)
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(CHECK_INTERVAL_MS)
+        self.update_timer.timeout.connect(self._auto_check_updates)
+        self.update_timer.start()
+        self._auto_check_updates()
         if not start_hidden:
             self.show()
 
+    def _make_page(self, page_class):
+        if page_class.needs_telemetry:
+            return page_class(self.bridge, self.notify, self.telemetry)
+        return page_class(self.bridge, self.notify)
+
     def _page_at(self, row):
-        return self.pages[row - 1] if row > self.ABOUT_ROW else None
+        return self.pages[row] if 0 <= row < len(self.pages) else None
 
     def _setup_tray(self, tray):
         self.tray = tray
@@ -526,25 +742,82 @@ class MainWindow(QMainWindow):
             tray.quit_requested.connect(self.quit)
 
     def _backend_ready(self):
+        self.telemetry.start()
+        self.bridge.call("get_warm_reboot", callback=self._warm_reboot_loaded)
         self.bridge.call("get_environment", callback=self._environment_loaded)
+        self.bridge.call(
+            "get_console",
+            callback=lambda r: self._console_loaded(r["data"]) if r["success"] else self.notify(r),
+        )
         if self.tray is not None:
             self.about.load_autostart()
         self._select_page(self.nav.currentRow())
+
+    def _auto_check_updates(self):
+        if self.about.auto_updates_enabled():
+            self.updates.check()
+
+    def _updates_checked(self, result, manual):
+        self.about.set_release(result, manual)
+        if manual or not result["success"] or not result["data"]["newer"]:
+            return
+        tag = result["data"]["tag"]
+        if self.settings.value("update_notified", "") == tag:
+            return
+        self.settings.setValue("update_notified", tag)
+        message = f"{result['data']['name']} is available. See About for the changelog."
+        self.toast.show_message(message)
+        if not self.isVisible() and self.tray is not None:
+            self._tray_message(message)
+
+    def _warm_reboot_loaded(self, result):
+        available = result["success"] and result["data"]["available"]
+        self.warm_reboot_button.setVisible(available)
+
+    def warm_reboot(self):
+        answer = QMessageBox.question(
+            self, "Warm Reboot", WARM_REBOOT_WARNING,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.warm_reboot_button.setEnabled(False)
+        self.warm_reboot_button.setText("Restarting…")
+
+        def done(result):
+            self.notify(result)
+            if not result["success"]:
+                self.warm_reboot_button.setEnabled(True)
+                self.warm_reboot_button.setText("Warm Reboot")
+
+        self.bridge.call("warm_reboot", callback=done)
+
+    def _console_loaded(self, console):
+        model = console["model"]
+        self.console_badge.setText(CONSOLE_NAMES.get(model, "Unknown model"))
+        self.console_badge.setToolTip(console_summary(console))
+        self.console_badge.setProperty("pro", console["pro"])
+        restyle(self.console_badge)
+        self.setWindowTitle(f"{APP_TITLE} - PS5 Pro" if console["pro"] else APP_TITLE)
+        self.about.set_console(console)
+        for page in self.pages:
+            page.set_console(console)
 
     def _environment_loaded(self, result):
         if not result["success"]:
             return
         notes = []
         if not result["data"]["root"]:
-            notes.append("Not running as root, so changes will fail with permission errors.")
+            notes.append("Not running as root, so changes will fail with permission errors")
         self.about.set_environment(result["data"])
         if result["data"]["missing"]:
             notes.append(
                 "Missing kernel interfaces: "
                 + ", ".join(result["data"]["missing"])
-                + ". Is the ps5-linux-patches kernel running?"
+                + " (is the ps5-linux-patches kernel running?)"
             )
-        self.banner_label.setText("  ".join(notes))
+        self.banner_label.setText("\n".join(notes))
         self.banner.setVisible(bool(notes))
 
     def _select_page(self, index):
@@ -555,7 +828,7 @@ class MainWindow(QMainWindow):
             if page is not current:
                 page.deactivate()
         self.stack.setCurrentIndex(index)
-        self.settings.setValue("last_tab", index)
+        self.settings.setValue("last_page", self.nav.item(index).text())
         if current and self.bridge.is_ready and self.isVisible():
             current.activate()
 
@@ -618,6 +891,9 @@ def run_gui(argv, start_hidden=False):
     app.setApplicationName("ps5-hwcon-gui")
     app.setApplicationDisplayName(APP_TITLE)
     app.setStyle("Fusion")
+    palette = app.palette()
+    palette.setColor(QPalette.ColorRole.Link, QColor(ACCENT))
+    app.setPalette(palette)
     app.setStyleSheet(STYLESHEET)
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)

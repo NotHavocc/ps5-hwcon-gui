@@ -16,7 +16,7 @@ class ClockLockCard(Card):
         self.busy = True
 
         self.lock_row = self.add(InfoRow("Clock Lock"))
-        self.slider = self.add(SliderRow("Clock", description, format_value=format_freq))
+        self.slider = self.add(SliderRow("Clock", description, format_value=format_freq, hint="Pins the clock."))
         self.slider.changed.connect(self._moved)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -78,7 +78,6 @@ class FrequencyPage(Page):
     kind = ""
     clock_description = ""
     fallback_step = 100
-    boot_note = ""
     restore_subject = ""
 
     def __init__(self, bridge, notify, parent=None):
@@ -91,23 +90,21 @@ class FrequencyPage(Page):
         self.saving_settings = False
         self._governor_ids = None
 
-        self.status_card = self.add(Card(f"{self.title} Frequency"))
+        self.status_card = self.add(Card("Status"))
         self.governor_row = self.status_card.add(InfoRow("Governor"))
         self.build_status_rows(self.status_card)
 
-        self.governor_card = self.add(Card("Governors"))
+        self.governor_card = self.add(Card("Governor"))
         self.governor_grid = self.governor_card.add(ButtonGrid(columns=3))
         self.governor_buttons = {}
+        self.restore_toggle = self.governor_card.add(ToggleRow("Restore on Startup", hint="Re-applies this at each boot."))
+        self.restore_toggle.toggled.connect(self.save_restore)
         self.governor_card.hide()
 
         self.clock_card = self.add(
             ClockLockCard(self.clock_description, self.fallback_step, self.apply_clock)
         )
         self.clock_card.hide()
-
-        advanced = self.add(Card("Startup"))
-        self.restore_toggle = advanced.add(ToggleRow("Restore on Startup"))
-        self.restore_toggle.toggled.connect(self.save_restore)
 
         self.build_extra_cards()
         self.finish_layout()
@@ -118,6 +115,9 @@ class FrequencyPage(Page):
 
     def build_extra_cards(self):
         pass
+
+    def extra_restore_parts(self, settings):
+        return []
 
     def render_status_rows(self, status):
         raise NotImplementedError
@@ -206,7 +206,6 @@ class FrequencyPage(Page):
                 self.governor_buttons[identifier] = button
                 buttons.append(button)
             self.governor_grid.set_buttons(buttons)
-        self.governor_card.set_title(f"Governors ({len(governors)})")
         self.governor_card.setVisible(bool(governors))
         for identifier, button in self.governor_buttons.items():
             button.setEnabled(not busy)
@@ -242,13 +241,13 @@ class FrequencyPage(Page):
             parts.append(self.governor_info(settings["saved_governor"])[0])
         if settings and settings["saved_clock"]:
             parts.append(f"the {format_freq(settings['saved_clock'])} clock lock")
+        if settings:
+            parts += self.extra_restore_parts(settings)
         what = (
             f"Re-applies {' and '.join(parts)}"
             if parts
             else f"Re-applies your last {self.restore_subject}"
         )
-        self.restore_toggle.set_description(
-            f"{what} when the app starts. {self.boot_note}"
-        )
+        self.restore_toggle.set_description(f"{what} when the app starts.")
         self.restore_toggle.set_checked(bool(settings and settings["restore_on_boot"]))
         self.restore_toggle.setEnabled(settings is not None and not self.saving_settings)

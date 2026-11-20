@@ -23,6 +23,12 @@ def restyle(widget):
     widget.style().polish(widget)
 
 
+def short_text(text):
+    """Drops the period at the end of a short on-screen line, like a hint or status note."""
+    text = (text or "").strip()
+    return text[:-1] if text.endswith(".") and not text.endswith("..") else text
+
+
 def muted_label(text="", word_wrap=True):
     label = QLabel(text)
     label.setObjectName("muted")
@@ -72,26 +78,34 @@ class InfoRow(QWidget):
 
     def set(self, value, description=None, error=False):
         self.value.setText(value)
-        self.description.setText(description or "")
+        self.description.setText(short_text(description))
         self.description.setVisible(bool(description))
         self.description.setObjectName("error" if error else "muted")
         restyle(self.description)
 
 
 class ToggleRow(QWidget):
+    """A checkbox with a short hint below it and its full explanation as a tooltip.
+
+    A note (a pending reboot, a missing driver) replaces the hint while it's set.
+    """
+
     toggled = pyqtSignal(bool)
 
-    def __init__(self, label, description="", parent=None):
+    def __init__(self, label, description="", parent=None, hint=""):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         self.checkbox = QCheckBox(label)
         self.checkbox.clicked.connect(self.toggled.emit)
+        self.checkbox.setToolTip(description)
         layout.addWidget(self.checkbox)
-        self.description = muted_label(description)
-        self.description.setContentsMargins(22, 0, 0, 0)
-        layout.addWidget(self.description)
+        self.hint = hint
+        self.note = muted_label()
+        self.note.setContentsMargins(22, 0, 0, 0)
+        layout.addWidget(self.note)
+        self.set_note(None)
 
     def set_checked(self, checked):
         self.checkbox.blockSignals(True)
@@ -102,7 +116,15 @@ class ToggleRow(QWidget):
         return self.checkbox.isChecked()
 
     def set_description(self, text):
-        self.description.setText(text)
+        self.checkbox.setToolTip(text)
+
+    def set_note(self, text, error=False):
+        """Visible text for something to act on, such as a pending reboot or a missing driver."""
+        text = short_text(text or self.hint)
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+        self.note.setObjectName("error" if error else "muted")
+        restyle(self.note)
 
     def setEnabled(self, enabled):
         self.checkbox.setEnabled(enabled)
@@ -111,7 +133,7 @@ class ToggleRow(QWidget):
 class SliderRow(QWidget):
     changed = pyqtSignal(int)
 
-    def __init__(self, label, description="", suffix="", format_value=None, parent=None):
+    def __init__(self, label, description="", suffix="", format_value=None, parent=None, hint=""):
         super().__init__(parent)
         self._values = [0]
         self._suffix = suffix
@@ -125,6 +147,7 @@ class SliderRow(QWidget):
         row.setSpacing(10)
         self.label = QLabel(f"{label}:")
         self.label.setMinimumWidth(130)
+        self.label.setToolTip(description)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.valueChanged.connect(self._on_slider)
         self.value_label = QLabel()
@@ -142,10 +165,8 @@ class SliderRow(QWidget):
         row.addWidget(self.value_label)
         row.addWidget(self.reset_button)
         layout.addLayout(row)
-
-        self.description = muted_label(description)
-        self.description.setVisible(bool(description))
-        layout.addWidget(self.description)
+        if hint:
+            layout.addWidget(muted_label(short_text(hint)))
 
     def set_values(self, values, value=None, end_labels=None, reset_value=None):
         self._values = list(values) or [0]
@@ -226,6 +247,11 @@ class ChoiceButton(QPushButton):
 
     def set_busy(self, busy):
         self._title.setText("Applying…" if busy else self._title_text)
+
+    def set_subtitle(self, subtitle):
+        self._subtitle.setText(subtitle)
+        self._subtitle.setVisible(bool(subtitle))
+        self.setMinimumHeight(46 if subtitle else 34)
 
 
 class ButtonGrid(QWidget):

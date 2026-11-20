@@ -1,9 +1,7 @@
 <h1 align="center">ps5-hwcon-gui</h1>
 
 <p align="center">
-  <img src="docs/about.png" alt="About tab" width="45%">
-  &nbsp;
-  <img src="docs/fan-curve.png" alt="Fan tab, curve editor" width="45%">
+  <img src="docs/about.png" alt="About tab" width="70%">
 </p>
 
 <p align="center">
@@ -82,6 +80,19 @@ Only one instance can run at a time, because two thermal guards would fight over
 
 ## Features
 
+The sidebar has Dashboard, Fan, CPU & GPU, Memory, Display, LED and About. Dashboard and CPU & GPU
+each have a switch at the top for their two pages. Hover an option to see what it does.
+
+### Dashboard
+
+- **Now**: everything at a glance: every temperature sensor, CPU clock, governor and load with a bar per
+  core, GPU clock, governor, busy % and VRAM use, fan speed and mode, and RAM and swap use.
+- **History**: charts of temperatures, CPU and GPU clocks, CPU and GPU load, fan speed and memory use over the
+  last 1, 5 or 10 minutes. Hover a chart to read the values at any moment.
+- Sampled every 2 s, and kept while the window is hidden in the tray, so you can check what
+  happened during a game.
+- **Export CSV** saves the whole 10-minute history to a spreadsheet-friendly file.
+
 ### Fan
 
 **Fan Control** switches between **Target Temperature** (the original control) and **Fan Curve**.
@@ -102,8 +113,9 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
 - **Target presets**: Quiet 85 °C, Default 80 °C, Balanced 72 °C, Cool 65 °C and
   Max Cooling 50 °C.
 - **Manual Target**: any target from 40 to 90 °C.
-- **Restore on Startup**: re-applies your last curve or target when the app starts. The
-  kernel resets both on every boot.
+- **Restore on Startup**: re-applies your last fan setting (curve, target, Full Speed or Console
+  Firmware) once per boot, when the app first starts. Restarting the app later in the same boot
+  leaves the fan alone, so changes made from the Decky plugin or a terminal stick.
 - **Thermal Guard**: when the CPU reaches the Overheat Threshold (80–100 °C, default 95), the fan
   switches to Full Speed (or the Max Cooling target). Your setting comes back once the CPU is
   10 °C cooler.
@@ -113,11 +125,24 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
 ### CPU
 
 - **Governor**: every cpufreq governor the kernel offers, applied to all CPUs.
-- **Status**: active governor (or **Mixed**), average and peak clock, hardware range and driver.
+- **Status**: active governor (or **Mixed**), average and peak clock and hardware range. Hover the clock to see the driver.
 - **Manual Clock**: locks every CPU to one clock (`scaling_min_freq` = `scaling_max_freq`). The
   slider snaps to `scaling_available_frequencies` when the driver lists them. **Automatic** restores
   the full range.
-- **Restore on Startup**: re-applies your last governor and clock lock.
+- **Boost to 3.5 GHz**: turns the CPU boost on or off through `/sys/devices/system/cpu/cpufreq/boost`.
+  Shown only on kernels that have it (rmuxnet's kernel).
+- **Restore on Startup**: re-applies your last governor, clock lock and boost.
+
+### Console model
+
+The app detects a PS5 Pro from its GPU PCI ID (`1002:13da` or `1002:13dc`). If no AMD GPU shows
+up in sysfs, it checks dmesg for the Pro's Viola firmware instead. The model is shown under the
+page list, and in the window title on a Pro. If detection is wrong, pick **PS5 Pro** or **PS5 /
+Slim** under **Console Model** on the About page. The choice is saved as `console_model` in the
+settings, and **Auto** goes back to detection. On a Pro, the GPU page puts the Pro settings first,
+the Fan page shows the GPU temperature next to the CPU, the CPU page says the firmware sets the
+CPU clocks, and the Memory page suggests 4 GB of VRAM if
+games crash after long sessions.
 
 ### GPU
 
@@ -127,6 +152,27 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
 - **Manual Clock**: locks the GPU to one of `available_frequencies`. **Automatic** removes the
   limits.
 - **Restore on Startup**: re-applies your last GPU governor and clock lock.
+- **Thermal Limit**: the GPU temperature where `ps5-gpufreq` starts lowering the clock (50–95 °C,
+  85 °C by default). It's read at boot, so it saves `ps5_gpufreq.temp_limit` in `cmdline.txt` and
+  needs a reboot. Picking 85 °C removes the argument. It asks before saving a value above 85 °C.
+- **Micro-stutter Fix**: removes `idle=halt` from `cmdline.txt`, the wiki's first fix for
+  micro-stutter. Needs a reboot.
+- **Hide Compute Queue** (base PS5 and Slim): writes `AMD_PS5_COMPUTE_QUEUE=0` to
+  `/etc/environment.d/90-ps5-compute-queue.conf`, for a game that glitches or hangs with PS5
+  Bazzite Deck's Mesa. Applies after logging out and back in.
+- **PS5 Pro**: on a Pro the PS5 Pro and Thermal Limit cards come first and CU Unlock is hidden,
+  since all 60 CUs are already on. The page shows the active CU count instead. It warns
+  when the count is lower or dmesg has no `using Viola firmware` line, which means the Viola firmware
+  wasn't loaded. It can also set `AMD_VIOLA_COMPUTE_QUEUE=0` (hide the async compute queue) and
+  `RADV_VIOLA_ML=0` (stock int8 path) for every session in `/etc/environment.d/90-ps5-viola.conf`.
+  These only work with a Mesa that has the PS5 Pro patches, and you have to log out and back in for
+  them to apply. The Pro's GPU clock reads 0 MHz while idle, so the page shows **Idle**.
+  The Pro card also warns when dmesg shows `mp1fw_sendmsg: Error : busy` (a kernel whose CPU clock
+  driver is too old). **Bluetooth Fix** adds `btusb.ps5_ep_resync=1` to `cmdline.txt` for the
+  Pro's MT7925 Bluetooth. Only rmuxnet's kernel has that option, so the toggle stays disabled
+  elsewhere. **Save Dump** appears when amdgpu has a crash dump
+  (`/sys/class/drm/card*/device/devcoredump/data`) and copies it to your home folder. The Pro
+  doesn't recover from GPU faults, and the kernel deletes the dump about 5 minutes after the fault.
 
 - **CU Unlock**: turns on the compute units disabled at the factory (36 or 38 active out of 40). **40
   CUs** adds `amdgpu.ps5_cu_unlock=3` to `cmdline.txt` on the boot drive, and **38 CUs** also adds
@@ -142,7 +188,7 @@ the page opens on Target Temperature and Fan Curve is greyed out. Kernels with t
   systemd display manager. Without those, only the reboot works. If something else is still using
   the GPU the driver can't unload, and the display comes back with nothing changed. See
   `journalctl -u ps5-hwcon-cu-reload` for what happened.
-- **Boot partition**: CU Unlock, GPU Memory and zswap edit files on the FAT partition the console booted
+- **Boot partition**: CU Unlock, Thermal Limit, GPU Memory and zswap edit files on the FAT partition the console booted
   from, wherever the distro or desktop mounted it. If it isn't mounted, the app mounts it read-only
   at `/boot/efi` (or `/run/ps5-hwcon/boot` if that's taken), and only makes it writable while
   saving. It picks the partition whose `cmdline.txt` has the running `root=` argument. If it can't
@@ -168,6 +214,33 @@ firmware holds the GPU at 2.23 GHz regardless of these settings.
   and a reboot. Turning it off writes a config without a device, which also masks a distro default.
 - **zswap**: switches zswap on or off immediately and saves `zswap.enabled` in `cmdline.txt`. It only
   helps with swap on a drive, so leave it off when using zram.
+- **Swap File**: creates a 4, 8 or 16 GB swap file at `/swapfile`, turns it on and adds it to
+  `/etc/fstab` (the previous fstab is kept as `.bak`). On Btrfs it uses `btrfs filesystem
+  mkswapfile`. **Remove** turns it off, deletes it and takes it out of fstab.
+- **Swappiness**: sets `vm.swappiness` (0–200) now and saves it in
+  `/etc/sysctl.d/90-ps5-hwcon-swappiness.conf`.
+
+### Display
+
+- **HDMI Link** (upstream kernels): the live FRL rate, whether the 4K 120 Hz link failed, Auto Low
+  Latency Mode and recovery state, read from `/sys/module/hdmi/parameters`. **Retry 4K 120 Hz**
+  tries the fast link again after a failure.
+- **Boot Options**: 1080p Safe Mode (`amdgpu.force_1080p=1`), No 4K at 120 Hz (`hdmi.frl_4k120=0`),
+  No VRR (`hdmi.vrr=0`), Don't Wake the TV (`ps5_cec.one_touch_play=0`) and Front USB-C Display
+  (`usbc_dp.enable=1`). Each one is saved in `cmdline.txt` (the previous file is kept as `.bak`)
+  and needs a reboot. Options the running kernel doesn't have are greyed out.
+
+### Warm Reboot
+
+The **Warm Reboot** button at the bottom of the window restarts Linux with `kexec`, skipping the
+PS5 OS and the loader. It loads `bzImage`, `initrd.img` and `cmdline.txt` from the boot partition,
+so `cmdline.txt` changes apply, but a VRAM change still needs a full start with the loader. It
+appears only when `kexec-tools` is installed, and asks before restarting. Warm reboots are
+experimental.
+
+On PS5 Bazzite Deck the button uses the image's built-in warm reboot (`ps5-kexec`), which also
+works without `kexec-tools` and keeps the PS5 Pro GPU firmware. It doesn't change the
+`ps5-warm-reboot on/off` setting. While an update is staged, restart normally once instead.
 
 ### LED
 
