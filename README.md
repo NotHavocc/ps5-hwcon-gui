@@ -7,7 +7,7 @@
 <p align="center">
   <img alt="GitHub Release" src="https://img.shields.io/github/v/release/NotHavocc/ps5-hwcon-gui">
   <img alt="Discord" src="https://img.shields.io/discord/1562764939486298175?logo=discord&label=PS5Linux%20Server">
-  <img alt="Static" src=" https://img.shields.io/badge/open_source-with_%3C3-blue">
+  <img alt="Static" src="https://img.shields.io/badge/open_source-with_%3C3-blue">
 </p>
 
 <p align="center">
