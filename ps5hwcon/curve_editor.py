@@ -5,7 +5,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .common import FAN_CURVE_TEMP_MAX, FAN_CURVE_TEMP_MIN, percent_to_pwm, pwm_to_percent
-from .widgets import ACCENT
+from .widgets import current_accent
 
 STOP_HANDLE = "stop"
 HANDLE_RADIUS = 6
@@ -180,7 +180,7 @@ class CurveEditor(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         plot = self._plot()
         enabled = self.isEnabled()
-        accent = QColor(ACCENT if enabled else "#666666")
+        accent = QColor(current_accent().accent if enabled else "#666666")
         text = QColor("#aaaaaa")
 
         painter.fillRect(plot, QColor("#2b2b2b"))

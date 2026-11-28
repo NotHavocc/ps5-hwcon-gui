@@ -37,9 +37,19 @@ from .pages.performance import PerformancePage
 from .telemetry import Telemetry
 from .tray import ICON_PATH, TRAY_WAIT_MS, create_tray
 from .updates import CHECK_INTERVAL_MS, UpdateChecker
-from .widgets import ACCENT, ButtonGrid, ChoiceButton, Toast, ToggleRow, restyle
+from .widgets import (
+    ACCENT_COLORS,
+    ButtonGrid,
+    ChoiceButton,
+    ColorSwatch,
+    Toast,
+    ToggleRow,
+    accent_colors,
+    current_accent,
+    restyle,
+    set_current_accent,
+)
 
-ACCENT_HOVER = "#005a9e"
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHECK_MARK = os.path.join(PACKAGE_DIR, "check.svg")
 AUTOSTART_ABOUT = "Runs Thermal Guard and LED loops in the background."
@@ -53,7 +63,8 @@ WARM_REBOOT_WARNING = (
 URL_OPENERS = (("xdg-open",), ("gio", "open"))
 KDE_OPENERS = (("kde-open",), ("kde-open5",))
 
-STYLESHEET = f"""
+def stylesheet(colors):
+    return f"""
 QMainWindow, QDialog, #root, #pageContent, QScrollArea, QScrollArea > QWidget > QWidget {{
     background-color: #2b2b2b;
     color: #ffffff;
@@ -75,7 +86,7 @@ QMenu::item {{
     border-radius: 3px;
 }}
 QMenu::item:selected {{
-    background-color: {ACCENT};
+    background-color: {colors.accent};
 }}
 QMenu::item:disabled {{
     color: #777777;
@@ -102,7 +113,7 @@ QListWidget#nav::item {{
     border-bottom: 1px solid #3d3d3d;
 }}
 QListWidget#nav::item:selected {{
-    background-color: {ACCENT};
+    background-color: {colors.accent};
     color: #ffffff;
     font-weight: bold;
 }}
@@ -118,7 +129,7 @@ QLabel#consoleBadge {{
     font-size: 12px;
 }}
 QLabel#consoleBadge[pro="true"] {{
-    color: {ACCENT};
+    color: {colors.accent};
     font-weight: bold;
 }}
 QGroupBox {{
@@ -173,8 +184,8 @@ QSlider::groove:horizontal {{
     border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
-    background: {ACCENT};
-    border: 1px solid {ACCENT_HOVER};
+    background: {colors.accent};
+    border: 1px solid {colors.hover};
     width: 12px;
     margin: -4px 0;
     border-radius: 2px;
@@ -199,11 +210,11 @@ QCheckBox::indicator {{
     background-color: #444444;
 }}
 QCheckBox::indicator:hover {{
-    border-color: {ACCENT};
+    border-color: {colors.accent};
 }}
 QCheckBox::indicator:checked {{
-    background-color: {ACCENT};
-    border-color: {ACCENT_HOVER};
+    background-color: {colors.accent};
+    border-color: {colors.hover};
     image: url("{CHECK_MARK}");
 }}
 QCheckBox::indicator:disabled {{
@@ -211,10 +222,10 @@ QCheckBox::indicator:disabled {{
     border-color: #4a4a4a;
 }}
 QCheckBox::indicator:checked:disabled {{
-    background-color: #2d5a80;
+    background-color: {colors.muted};
 }}
 QPushButton {{
-    background-color: {ACCENT};
+    background-color: {colors.accent};
     color: #ffffff;
     border: none;
     padding: 8px 16px;
@@ -222,7 +233,7 @@ QPushButton {{
     font-weight: bold;
 }}
 QPushButton:hover {{
-    background-color: {ACCENT_HOVER};
+    background-color: {colors.hover};
 }}
 QPushButton:disabled {{
     background-color: #444444;
@@ -238,16 +249,27 @@ QPushButton#choice {{
     padding: 0;
 }}
 QPushButton#choice[selected="true"] {{
-    background-color: {ACCENT};
+    background-color: {colors.accent};
 }}
 QPushButton#choice[selected="true"]:hover {{
-    background-color: {ACCENT_HOVER};
+    background-color: {colors.hover};
 }}
 QPushButton#choice:disabled {{
     background-color: #444444;
 }}
 QPushButton#choice[selected="true"]:disabled {{
-    background-color: #2d5a80;
+    background-color: {colors.muted};
+}}
+QPushButton#swatch {{
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: 4px;
+}}
+QPushButton#swatch:hover {{
+    border-color: #888888;
+}}
+QPushButton#swatch[selected="true"] {{
+    border-color: #ffffff;
 }}
 QPushButton#small {{
     padding: 5px 14px;
@@ -273,7 +295,7 @@ QToolButton#reset {{
     padding: 0 2px;
 }}
 QToolButton#reset:hover {{
-    color: {ACCENT};
+    color: {colors.accent};
 }}
 QLineEdit {{
     background-color: #444444;
@@ -283,7 +305,7 @@ QLineEdit {{
     border-radius: 3px;
 }}
 QLineEdit:focus {{
-    border-color: {ACCENT};
+    border-color: {colors.accent};
 }}
 #banner {{
     background-color: #4a3a1a;
@@ -295,7 +317,7 @@ QLineEdit:focus {{
 #toast {{
     background-color: #333333;
     border: 1px solid #555555;
-    border-left: 4px solid {ACCENT};
+    border-left: 4px solid {colors.accent};
     border-radius: 4px;
 }}
 #toast[critical="true"] {{
@@ -313,7 +335,7 @@ QProgressBar#load {{
     border-radius: 3px;
 }}
 QProgressBar#load::chunk {{
-    background-color: {ACCENT};
+    background-color: {colors.accent};
     border-radius: 3px;
 }}
 QScrollBar:vertical {{
@@ -329,6 +351,17 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
 """
+
+
+def apply_accent(colors):
+    set_current_accent(colors)
+    app = QApplication.instance()
+    palette = app.palette()
+    palette.setColor(QPalette.ColorRole.Link, QColor(colors.accent))
+    app.setPalette(palette)
+    app.setStyleSheet(stylesheet(colors))
+    for widget in app.allWidgets():
+        widget.update()
 
 
 _icon = None
@@ -446,10 +479,9 @@ class AboutPage(QWidget):
         )
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon)
-        title = QLabel(APP_TITLE)
-        title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {ACCENT}; margin-top: 8px;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        self.title = QLabel(APP_TITLE)
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title)
         self.version = QLabel(f"Version {__version__}")
         self.version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.version.setStyleSheet("color: #aaaaaa;")
@@ -465,11 +497,13 @@ class AboutPage(QWidget):
         self.update_button.setObjectName("small")
         self.update_button.clicked.connect(self.check_updates)
         actions.addWidget(self.update_button)
+        self.links = []
         for text, url in self.LINKS:
-            link = QLabel(f'<a href="{url}" style="color: {ACCENT}; text-decoration: none;">{text}</a>')
+            link = QLabel()
             link.setTextFormat(Qt.TextFormat.RichText)
             link.linkActivated.connect(open_url)
             actions.addWidget(link)
+            self.links.append((link, text, url))
         actions.addStretch(1)
         layout.addSpacing(10)
         layout.addLayout(actions)
@@ -493,6 +527,20 @@ class AboutPage(QWidget):
         self.console_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.console_note, 0, Qt.AlignmentFlag.AlignHCenter)
         self.render_console()
+        accent_title = QLabel("Accent Color")
+        accent_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        accent_title.setStyleSheet("margin-top: 16px; font-weight: bold;")
+        layout.addWidget(accent_title)
+        self.accent_buttons = {}
+        for colors in ACCENT_COLORS:
+            button = ColorSwatch(colors)
+            button.clicked.connect(lambda _=False, c=colors: self.save_accent(c))
+            self.accent_buttons[colors.key] = button
+        accent_grid = ButtonGrid(columns=len(ACCENT_COLORS))
+        accent_grid.set_buttons(self.accent_buttons.values())
+        accent_grid.setFixedWidth(420)
+        layout.addWidget(accent_grid, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.render_accent()
         self.autostart_toggle = ToggleRow("Start in Tray at Login", AUTOSTART_ABOUT, hint="Opens hidden in the tray at login.")
         self.autostart_toggle.setFixedWidth(420)
         self.autostart_toggle.setContentsMargins(0, 16, 0, 0)
@@ -507,6 +555,23 @@ class AboutPage(QWidget):
         self.auto_update_toggle.set_checked(self.auto_updates_enabled())
         self.auto_update_toggle.toggled.connect(lambda checked: self.settings.setValue("check_updates", checked))
         layout.addWidget(self.auto_update_toggle, 0, Qt.AlignmentFlag.AlignHCenter)
+
+    def save_accent(self, colors):
+        if colors == current_accent():
+            return
+        self.settings.setValue("accent", colors.key)
+        apply_accent(colors)
+        self.render_accent()
+
+    def render_accent(self):
+        colors = current_accent()
+        self.title.setStyleSheet(
+            f"font-size: 24px; font-weight: bold; color: {colors.accent}; margin-top: 8px;"
+        )
+        for link, text, url in self.links:
+            link.setText(f'<a href="{url}" style="color: {colors.accent}; text-decoration: none;">{text}</a>')
+        for key, button in self.accent_buttons.items():
+            button.set_selected(key == colors.key)
 
     def auto_updates_enabled(self):
         return self.settings.value("check_updates", True, type=bool)
@@ -891,10 +956,7 @@ def run_gui(argv, start_hidden=False):
     app.setApplicationName("ps5-hwcon-gui")
     app.setApplicationDisplayName(APP_TITLE)
     app.setStyle("Fusion")
-    palette = app.palette()
-    palette.setColor(QPalette.ColorRole.Link, QColor(ACCENT))
-    app.setPalette(palette)
-    app.setStyleSheet(STYLESHEET)
+    apply_accent(accent_colors(QSettings("ps5-hwcon", "ps5-hwcon-gui").value("accent", "", type=str)))
     app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
 

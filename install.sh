@@ -167,10 +167,17 @@ remove_legacy_unit
 
 step "Copying the app to $PREFIX"
 sudo mkdir -p "$PREFIX"
+SRC_PARTS=(pyproject.toml README.md LICENSE ps5hwcon)
+[ -d "$SRC_DIR/packaging" ] && SRC_PARTS+=(packaging)
+sudo rm -rf -- "$PREFIX/src.new"
+sudo mkdir -p "$PREFIX/src.new"
+if ! (cd "$SRC_DIR" && tar -cf - --exclude='__pycache__' --exclude='*.egg-info' \
+  "${SRC_PARTS[@]}") | sudo tar -xf - -C "$PREFIX/src.new"; then
+  sudo rm -rf -- "$PREFIX/src.new"
+  die "Couldn't copy the app to $PREFIX/src"
+fi
 sudo rm -rf -- "$PREFIX/src"
-sudo mkdir -p "$PREFIX/src"
-(cd "$SRC_DIR" && tar -cf - --exclude='__pycache__' --exclude='*.egg-info' \
-  pyproject.toml README.md LICENSE ps5hwcon packaging) | sudo tar -xf - -C "$PREFIX/src"
+sudo mv -- "$PREFIX/src.new" "$PREFIX/src"
 ok "Source copied"
 
 step "Installing PyQt6 into a private environment (this downloads about 100 MB)"

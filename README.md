@@ -5,11 +5,14 @@
 </p>
 
 <p align="center">
+  <img alt="GitHub Release" src="https://img.shields.io/github/v/release/NotHavocc/ps5-hwcon-gui">
+  <img alt="Discord" src="https://img.shields.io/discord/1562764939486298175?logo=discord&label=PS5Linux%20Server">
+  <img alt="Static" src=" https://img.shields.io/badge/open_source-with_%3C3-blue">
+</p>
+
+<p align="center">
 A desktop (PyQt6) port of <a href="https://github.com/NotHavocc/ps5-hwcon-plugin">ps5-hwcon-plugin</a> for
-PS5 Linux. It covers the same features as the Decky plugin in a regular window: fan curve or
-target, live temperatures, CPU and GPU governors and clock locks, GPU memory, zram and zswap, and
-indicator LED presets. Decky
-Loader is not needed.
+PS5 Linux. Control your PS5's hardware on Linux with ease.
 </p>
 
 ---

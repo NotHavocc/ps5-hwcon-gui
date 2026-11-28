@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ps5-hwcon-gui"
-version = "2.0.0"  # pip needs a PEP 440 version; the app shows ps5hwcon.__version__
+version = "2.1.0"  # pip needs a PEP 440 version; the app shows ps5hwcon.__version__
 description = "PyQt6 app for PS5 Linux fan, CPU/GPU governor and clock, and LED control"
 readme = "README.md"
 license = { file = "LICENSE" }

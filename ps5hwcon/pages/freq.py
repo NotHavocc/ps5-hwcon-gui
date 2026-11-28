@@ -85,6 +85,7 @@ class FrequencyPage(Page):
         super().__init__(bridge, notify, parent)
         self.status = None
         self.status_error = None
+        self.unsupported = False
         self.settings = None
         self.applying = None
         self.saving_settings = False
@@ -135,7 +136,9 @@ class FrequencyPage(Page):
         return (self.governor_info(current)[0] if current else "Unavailable"), None
 
     def on_activate(self):
-        self.refresh_status(callback=lambda r: self.notify(r, quiet=True))
+        self.refresh_status(
+            callback=lambda r: None if r.get("unsupported") else self.notify(r, quiet=True)
+        )
         self.call(f"get_{self.kind}_settings", callback=self._settings_loaded)
 
     def _settings_loaded(self, result):
@@ -149,8 +152,10 @@ class FrequencyPage(Page):
         if result["success"]:
             self.status = result["data"]
             self.status_error = None
+            self.unsupported = False
         else:
             self.status_error = result["error"]
+            self.unsupported = bool(result.get("unsupported"))
         self.render()
 
     def _applied(self, result, saved_key, saved_value):
@@ -219,7 +224,9 @@ class FrequencyPage(Page):
 
         value, description = self.governor_text(status, loading)
         self.governor_row.set(
-            value, self.status_error or description, error=bool(self.status_error)
+            value,
+            self.status_error or description,
+            error=bool(self.status_error) and not self.unsupported,
         )
         self.render_status_rows(status)
 

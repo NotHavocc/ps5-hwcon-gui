@@ -327,6 +327,10 @@ def _fail(error):
     return {"success": False, "error": error}
 
 
+def _unsupported(reason):
+    return {"success": False, "error": reason, "unsupported": True}
+
+
 def _led_brightness_path(preset):
     return f"{LED_CLASS_DIR}/{LED_PREFIX}{preset}{LED_SUFFIX}/brightness"
 
@@ -1186,12 +1190,27 @@ def _write_governor_sync(governor):
     if failures:
         raise failures[0]
 
-async def _read_cpufreq():
+def _cpufreq_missing():
     if not os.path.isdir(CPUFREQ_DIR):
-        return False, (
+        return (
             f"{CPUFREQ_DIR} does not exist. No cpufreq driver is loaded "
             "(check that amd_pstate or acpi-cpufreq is enabled in the kernel)"
         )
+    try:
+        entries = os.listdir(CPUFREQ_DIR)
+    except OSError:
+        return None
+    if not any(CPU_POLICY_PATTERN.fullmatch(entry) for entry in entries):
+        return (
+            "No cpufreq driver is running, so CPU clocks can't be read or changed. "
+            "This kernel has no ps5-cpufreq driver (rmuxnet's kernel has one)"
+        )
+    return None
+
+async def _read_cpufreq():
+    missing = _cpufreq_missing()
+    if missing:
+        return False, missing
     ok, result = await _guarded_io("Reading CPU frequency", CPUFREQ_DIR, _scan_cpufreq)
     if ok and not result["governors"]:
         return False, f"The {result['driver'] or 'cpufreq'} driver exposes no governors"
@@ -2058,7 +2077,6 @@ def _read_gpu_pci_id():
 
 
 def _read_env_flags_sync(path, variables):
-    """{NAME: True} for each of `variables` set to 0 in an environment.d file."""
     enabled = set()
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -2181,6 +2199,20 @@ def _bazzite_warm_reboot_sync():
         return _command_error(result, "systemctl kexec")
     return None
 
+# Co-authored by: abrocoma
+KEXEC_RELEASE_MODULES = ("btusb", "moal", "mlan")
+
+
+# Co-authored by: abrocoma
+def _release_radios_for_kexec_sync():
+    if shutil.which("systemctl"):
+        _run_command("systemctl", "stop", "bluetooth.service", timeout=15)
+    for module in KEXEC_RELEASE_MODULES:
+        if os.path.isdir(f"{MODULE_DIR}/{module}"):
+            result = _run_command("modprobe", "-r", module, timeout=15)
+            if result is None or result.returncode != 0:
+                logger.warning(f"Couldn't unload {module} before the warm reboot")
+
 
 def _warm_reboot_sync():
     if shutil.which(BAZZITE_KEXEC):
@@ -2192,6 +2224,8 @@ def _warm_reboot_sync():
     result = _run_command("kexec", "-l", kernel, f"--initrd={initrd}", f"--append={line}")
     if result is None or result.returncode != 0:
         return _command_error(result, "kexec")
+    # Co-authored by: abrocoma
+    _release_radios_for_kexec_sync()
     if shutil.which("systemctl"):
         result = _run_command("systemctl", "kexec", "-i")
         name = "systemctl kexec"
@@ -2991,6 +3025,9 @@ class Backend:
         return _ok(f"LED preset '{preset}' applied", {"preset": preset, **_led_settings_snapshot()})
 
     async def get_cpu_status(self):
+        missing = _cpufreq_missing()
+        if missing:
+            return _unsupported(missing)
         async with _cpu_lock:
             ok, result = await _read_cpufreq()
         if not ok:
@@ -3345,7 +3382,6 @@ class Backend:
         return _ok("Swap file read", result, log=False)
 
     async def _swap_file_job(self, action, done, func, *args):
-        """Runs a swap file change, which can outlast the usual I/O timeout, then re-reads the state."""
         try:
             error = await asyncio.wait_for(_run_detached(func, *args), timeout=SWAPFILE_TIMEOUT_SECONDS + 10)
         except Exception as exc:
@@ -3501,7 +3537,6 @@ class Backend:
         return _ok("Memory status read", result, log=False)
 
     async def get_telemetry(self):
-        """One snapshot of every live reading, for the Dashboard and Performance pages."""
         fan = (await self.get_fan_status())["data"]
         async with _cpu_lock:
             ok_cpu, cpu = await _read_cpufreq()

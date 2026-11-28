@@ -1,4 +1,5 @@
 from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -15,7 +16,46 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-ACCENT = "#1a9fff"
+from collections import namedtuple
+
+AccentColor = namedtuple("AccentColor", "key label accent hover muted text")
+# muted is the selected-but-disabled shade; text goes on top of the accent.
+ACCENT_COLORS = (
+    AccentColor("blue", "Blue", "#1a9fff", "#005a9e", "#2d5a80", "#ffffff"),
+    AccentColor("purple", "Purple", "#9b6bff", "#6a3fc8", "#4f3f80", "#ffffff"),
+    AccentColor("green", "Green", "#22b573", "#16794c", "#2d6650", "#ffffff"),
+    AccentColor("orange", "Orange", "#f08a24", "#b3600f", "#80562d", "#ffffff"),
+    AccentColor("pink", "Pink", "#e0559b", "#a8336e", "#803d5e", "#ffffff"),
+    AccentColor("red", "Red", "#e5484d", "#a8272c", "#803436", "#ffffff"),
+)
+DEFAULT_ACCENT = ACCENT_COLORS[0]
+_accent = DEFAULT_ACCENT
+
+
+def custom_accent(name):
+    """An AccentColor for any color, with its hover and muted shades worked out from it."""
+    color = QColor(name)
+    muted = QColor.fromHsl(max(color.hslHue(), 0), color.hslSaturation() * 2 // 5, 80)
+    light = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue() > 160
+    return AccentColor(
+        "custom", "Custom", color.name(), color.darker(150).name(), muted.name(),
+        "#000000" if light else "#ffffff",
+    )
+
+
+def accent_colors(key, custom=""):
+    if key == "custom" and QColor(custom).isValid():
+        return custom_accent(custom)
+    return next((colors for colors in ACCENT_COLORS if colors.key == key), DEFAULT_ACCENT)
+
+
+def current_accent():
+    return _accent
+
+
+def set_current_accent(colors):
+    global _accent
+    _accent = colors
 
 
 def restyle(widget):
@@ -24,7 +64,6 @@ def restyle(widget):
 
 
 def short_text(text):
-    """Drops the period at the end of a short on-screen line, like a hint or status note."""
     text = (text or "").strip()
     return text[:-1] if text.endswith(".") and not text.endswith("..") else text
 
@@ -85,11 +124,6 @@ class InfoRow(QWidget):
 
 
 class ToggleRow(QWidget):
-    """A checkbox with a short hint below it and its full explanation as a tooltip.
-
-    A note (a pending reboot, a missing driver) replaces the hint while it's set.
-    """
-
     toggled = pyqtSignal(bool)
 
     def __init__(self, label, description="", parent=None, hint=""):
@@ -119,7 +153,6 @@ class ToggleRow(QWidget):
         self.checkbox.setToolTip(text)
 
     def set_note(self, text, error=False):
-        """Visible text for something to act on, such as a pending reboot or a missing driver."""
         text = short_text(text or self.hint)
         self.note.setText(text)
         self.note.setVisible(bool(text))
@@ -214,8 +247,6 @@ class SliderRow(QWidget):
 
 
 class ChoiceButton(QPushButton):
-    """A button with a title, an optional subtitle and an accent bar when selected."""
-
     def __init__(self, title, subtitle="", parent=None):
         super().__init__(parent)
         self.setObjectName("choice")
@@ -243,7 +274,9 @@ class ChoiceButton(QPushButton):
     def set_selected(self, selected):
         if self.property("selected") != selected:
             self.setProperty("selected", selected)
-            restyle(self)
+            # The labels' color depends on this property, so they need repolishing too.
+            for widget in (self, self._title, self._subtitle):
+                restyle(widget)
 
     def set_busy(self, busy):
         self._title.setText("Applying…" if busy else self._title_text)
@@ -254,9 +287,29 @@ class ChoiceButton(QPushButton):
         self.setMinimumHeight(46 if subtitle else 34)
 
 
-class ButtonGrid(QWidget):
-    """Lays buttons out in columns; a lone last button spans the row."""
+class ColorSwatch(QPushButton):
+    def __init__(self, colors, parent=None):
+        super().__init__(parent)
+        self.setObjectName("swatch")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(30)
+        self.setProperty("selected", False)
+        self.set_colors(colors)
 
+    def set_colors(self, colors, text=""):
+        self.setText(text)
+        self.setToolTip(colors.label)
+        self.setAccessibleName(f"{colors.label} accent")
+        self.setStyleSheet(f"background-color: {colors.accent}; color: {colors.text};")
+
+    def set_selected(self, selected):
+        if self.property("selected") != selected:
+            self.setProperty("selected", selected)
+            restyle(self)
+
+
+class ButtonGrid(QWidget):
     def __init__(self, columns=2, parent=None):
         super().__init__(parent)
         self.columns = columns
@@ -280,8 +333,6 @@ class ButtonGrid(QWidget):
 
 
 def desktop_notify(title, text, warning=False):
-    """Sends a freedesktop notification without blocking; silently does nothing if the
-    session bus or notification service is unavailable."""
     from PyQt6.QtCore import QMetaType
     from PyQt6.QtDBus import QDBusArgument, QDBusConnection, QDBusMessage
 
@@ -308,8 +359,6 @@ def desktop_notify(title, text, warning=False):
 
 
 class Toast(QFrame):
-    """A transient message pinned to the top of its parent window, below any widget in `above`."""
-
     DURATION_MS = 3500
 
     def __init__(self, parent, above=None):
